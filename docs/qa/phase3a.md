@@ -42,7 +42,9 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33855336384 for `9e71175`, all three jobs green: ubuntu 1 m 17 s, windows 2 m 36 s, macos 2 m 04 s. The 48 tests pass everywhere.
+
+Round 3 result: 0 findings.
 
 ## Not verified here
 

@@ -8,12 +8,13 @@ use std::time::Duration;
 // while the base one takes a full `TextViewStyle`, which the preview themes
 // need. Without a style it renders with the defaults the component theme
 // installs, so the "System" theme looks exactly as before.
+use gpui_kit::base::input::{InputBaseState, MultiLineMode};
 use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
     Copy, Cut, Editor, EditorState, InputEvent, Paste, Redo, Replace, RopeExt as _, Search,
-    SelectAll, Undo,
+    SelectAll, TextareaState, Undo,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::text::TextViewState;
@@ -31,6 +32,7 @@ use crate::keymap::{
     self, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource,
     ViewSplit,
 };
+use crate::rendered::{RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
 use crate::theme::{self, PreviewTheme};
 
@@ -62,6 +64,69 @@ struct InsertMenu {
     _dismiss: Subscription,
 }
 
+/// The input the user is typing in: the source editor, or the block being
+/// edited in the rendered view. Menus and the "+" work on whichever it is.
+#[derive(Clone)]
+enum ActiveEditor {
+    Source(Entity<EditorState>),
+    Block(Entity<TextareaState>),
+}
+
+impl ActiveEditor {
+    /// Run `f` on the state, whichever kind it is.
+    fn read<R>(&self, cx: &App, f: impl FnOnce(&dyn LineInput) -> R) -> R {
+        match self {
+            Self::Source(editor) => f(editor.read(cx)),
+            Self::Block(editor) => f(editor.read(cx)),
+        }
+    }
+
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Self::Source(editor) => editor.focus_handle(cx),
+            Self::Block(editor) => editor.focus_handle(cx),
+        }
+    }
+
+    /// Window-space bounds of the cursor's line, once the input has laid out.
+    fn cursor_line_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
+        self.read(cx, |state| state.cursor_line_bounds())
+    }
+
+    fn cursor_line_is_blank(&self, cx: &App) -> bool {
+        self.read(cx, |state| state.cursor_line_trimmed().is_empty())
+    }
+
+    /// Put a block's skeleton at the cursor.
+    fn insert(&self, kind: insert::BlockKind, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Source(editor) => editor.update(cx, |state, cx| {
+                insert::insert_block(state, kind, window, cx);
+            }),
+            Self::Block(editor) => editor.update(cx, |state, cx| {
+                insert::insert_block(state, kind, window, cx);
+            }),
+        }
+    }
+}
+
+/// What [`ActiveEditor`] needs from either kind of input state.
+trait LineInput {
+    fn cursor_line_bounds(&self) -> Option<Bounds<Pixels>>;
+    fn cursor_line_trimmed(&self) -> String;
+}
+
+impl<M: MultiLineMode> LineInput for InputBaseState<M> {
+    fn cursor_line_bounds(&self) -> Option<Bounds<Pixels>> {
+        let line = insert::cursor_line_range(self);
+        self.range_to_bounds(&(line.start..line.start))
+    }
+
+    fn cursor_line_trimmed(&self) -> String {
+        insert::cursor_line_trimmed(self)
+    }
+}
+
 /// The editor pane and the preview pane, kept in sync.
 ///
 /// The editor state owns the text. Every change it emits is copied into
@@ -72,6 +137,8 @@ struct InsertMenu {
 pub struct Smep {
     editor: Entity<EditorState>,
     preview: Entity<TextViewState>,
+    /// The rendered view, editable block by block; shares `editor`'s text.
+    rendered: Entity<RenderedView>,
     path: Option<PathBuf>,
     format: PreviewFormat,
     source: SharedString,
@@ -156,8 +223,16 @@ impl Smep {
             state.focus(window, cx);
         });
         let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
+        let rendered = cx.new(|cx| RenderedView::new(editor.clone(), window, cx));
 
         let subscriptions = vec![
+            cx.subscribe_in(
+                &rendered,
+                window,
+                |this, _, event: &RenderedEvent, window, cx| match event {
+                    RenderedEvent::SlashTyped => this.open_insert_menu(window, cx),
+                },
+            ),
             cx.subscribe_in(
                 &editor,
                 window,
@@ -178,6 +253,9 @@ impl Smep {
             ),
             // Cursor moves do not emit events; observe so the "+" follows the cursor.
             cx.observe(&editor, |_, _, cx| cx.notify()),
+            // A block starting or ending its edit changes where menus send
+            // their actions; the menus are rebuilt on render.
+            cx.observe(&rendered, |_, _, cx| cx.notify()),
             window.observe_window_appearance(|window, cx| {
                 Theme::sync_system_appearance(Some(window), cx);
             }),
@@ -211,6 +289,7 @@ impl Smep {
         let this = Self {
             editor,
             preview,
+            rendered,
             path: document.path,
             format: document.format,
             source: saved.clone(),
@@ -226,7 +305,11 @@ impl Smep {
         };
         this.refresh_title(window);
         if this.settings.view_mode == ViewMode::Rendered {
-            this.focus_handle.focus(window, cx);
+            this.rendered
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
         }
         this
     }
@@ -257,7 +340,17 @@ impl Smep {
             self.save_settings();
         }
         if mode == ViewMode::Rendered {
-            self.focus_handle.focus(window, cx);
+            // The rendered view takes focus (its active block, if any, takes
+            // it from there), so the root's shortcuts keep working.
+            match self.rendered.read(cx).active_editor() {
+                Some(block) => block.update(cx, |state, cx| state.focus(window, cx)),
+                None => self
+                    .rendered
+                    .read(cx)
+                    .focus_handle()
+                    .clone()
+                    .focus(window, cx),
+            }
         } else {
             self.editor.update(cx, |state, cx| state.focus(window, cx));
         }
@@ -314,9 +407,9 @@ impl Smep {
     }
 
     /// The File / Edit / View menus for the title bar. Every menu returns
-    /// focus to the editor, so the editing actions land there.
+    /// focus to the editor being typed in, so the editing actions land there.
     fn render_menu_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let editor_focus = self.editor.focus_handle(cx);
+        let editor_focus = self.active_editor(cx).focus_handle(cx);
         let mode = self.view_mode();
         let menu_bar = self.menu_bar_shown();
         let current_theme = self.preview_theme();
@@ -522,7 +615,10 @@ impl Smep {
         self.path = document.path;
         self.saved = document.text.clone().into();
         self.source = self.saved.clone();
-        // `set_value` emits no change event, so `source` is set by hand above.
+        // `set_value` emits no change event, so `source` is set by hand above
+        // and the rendered view is told that its block is gone.
+        self.rendered
+            .update(cx, |rendered, cx| rendered.deactivate(window, cx));
         self.editor
             .update(cx, |state, cx| state.set_value(document.text, window, cx));
         self.set_preview(document.format, cx);
@@ -691,11 +787,20 @@ impl Smep {
             && state.cursor() == insert::cursor_line_range(state).end
     }
 
+    /// The editor the user is typing in: the active block in the rendered
+    /// view, otherwise the source editor.
+    fn active_editor(&self, cx: &App) -> ActiveEditor {
+        if self.view_mode() == ViewMode::Rendered
+            && let Some(editor) = self.rendered.read(cx).active_editor()
+        {
+            return ActiveEditor::Block(editor);
+        }
+        ActiveEditor::Source(self.editor.clone())
+    }
+
     /// Window-space bounds of the cursor's line, once the editor has laid out.
     fn cursor_line_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
-        let state = self.editor.read(cx);
-        let line = insert::cursor_line_range(state);
-        state.range_to_bounds(&(line.start..line.start))
+        self.active_editor(cx).cursor_line_bounds(cx)
     }
 
     /// Open a popup menu at `position`, replacing any menu already open.
@@ -707,7 +812,7 @@ impl Smep {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor_focus = self.editor.focus_handle(cx);
+        let editor_focus = self.active_editor(cx).focus_handle(cx);
         let menu = PopupMenu::build(window, cx, |menu, _, _| {
             build(menu).action_context(editor_focus)
         });
@@ -724,18 +829,15 @@ impl Smep {
     }
 
     /// The block entries, one per snippet, inserting at the editor's cursor.
-    fn insert_items(editor: &Entity<EditorState>, mut menu: PopupMenu) -> PopupMenu {
+    fn insert_items(editor: &ActiveEditor, mut menu: PopupMenu) -> PopupMenu {
         for entry in insert::MENU {
             menu = match entry {
                 Some(kind) => {
                     let kind = *kind;
                     let editor = editor.clone();
                     menu.item(
-                        PopupMenuItem::new(kind.label()).on_click(move |_, window, cx| {
-                            editor.update(cx, |state, cx| {
-                                insert::insert_block(state, kind, window, cx);
-                            });
-                        }),
+                        PopupMenuItem::new(kind.label())
+                            .on_click(move |_, window, cx| editor.insert(kind, window, cx)),
                     )
                 }
                 None => menu.separator(),
@@ -752,7 +854,7 @@ impl Smep {
         let Some(bounds) = self.cursor_line_bounds(cx) else {
             return;
         };
-        let editor = self.editor.clone();
+        let editor = self.active_editor(cx);
         self.open_menu(
             bounds.bottom_left(),
             move |menu| Self::insert_items(&editor, menu),
@@ -769,7 +871,7 @@ impl Smep {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.editor.clone();
+        let editor = self.active_editor(cx);
         self.open_menu(
             position,
             move |menu| {
@@ -859,14 +961,11 @@ impl Smep {
         if self.insert_menu.is_some() {
             return None;
         }
-        if !self.editor.focus_handle(cx).is_focused(window) {
+        let editor = self.active_editor(cx);
+        if !editor.focus_handle(cx).is_focused(window) || !editor.cursor_line_is_blank(cx) {
             return None;
         }
-        let state = self.editor.read(cx);
-        if !insert::cursor_line_trimmed(state).is_empty() {
-            return None;
-        }
-        let bounds = self.cursor_line_bounds(cx)?;
+        let bounds = editor.cursor_line_bounds(cx)?;
 
         let size = px(18.);
         let origin = point(
@@ -996,7 +1095,11 @@ impl Render for Smep {
 
         let content = match self.view_mode() {
             ViewMode::Source => editor.into_any_element(),
-            ViewMode::Rendered => preview.into_any_element(),
+            ViewMode::Rendered => {
+                self.rendered
+                    .update(cx, |rendered, cx| rendered.set_palette(palette, cx));
+                self.rendered.clone().into_any_element()
+            }
             ViewMode::Split => h_resizable("smep-split")
                 .child(resizable_panel().child(editor.into_any_element()))
                 .child(resizable_panel().child(preview.into_any_element()))
@@ -1031,9 +1134,11 @@ mod tests {
     // in GPUI's `test` attribute and shadow the built-in `#[test]`.
     use std::path::{Path, PathBuf};
 
-    use gpui_kit::component::input::{EditorState, Position};
+    use gpui_kit::base::input::{InputBaseState, InputModeKind};
+    use gpui_kit::component::input::{EditorState, Position, TextareaState};
     use gpui_kit::{
-        Entity, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point, px,
+        Entity, Focusable as _, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext,
+        point, px,
     };
 
     use super::{PREVIEW_DEBOUNCE, PreviewFormat, Smep};
@@ -1110,7 +1215,10 @@ mod tests {
         });
     }
 
-    fn value(editor: &Entity<EditorState>, cx: &VisualTestContext) -> String {
+    fn value<M: InputModeKind>(
+        editor: &Entity<InputBaseState<M>>,
+        cx: &VisualTestContext,
+    ) -> String {
         cx.read(|cx| editor.read(cx).value().to_string())
     }
 
@@ -1122,7 +1230,11 @@ mod tests {
         cx.read(|cx| smep.read(cx).is_dirty())
     }
 
-    fn type_text(editor: &Entity<EditorState>, text: &str, cx: &mut VisualTestContext) {
+    fn type_text<M: InputModeKind>(
+        editor: &Entity<InputBaseState<M>>,
+        text: &str,
+        cx: &mut VisualTestContext,
+    ) {
         cx.update(|window, cx| {
             editor.update(cx, |state, cx| state.replace_all(text, window, cx));
         });
@@ -1375,6 +1487,268 @@ mod tests {
         cx.simulate_keystrokes(&primary("2"));
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
+    }
+
+    fn rendered_mode(smep: &Entity<Smep>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.set_view_mode(ViewMode::Rendered, window, cx)
+            })
+        });
+        draw(cx);
+    }
+
+    fn activate_block(
+        smep: &Entity<Smep>,
+        range: std::ops::Range<usize>,
+        cx: &mut VisualTestContext,
+    ) {
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        cx.update(|window, cx| {
+            rendered.update(cx, |rendered, cx| rendered.activate(range, window, cx))
+        });
+        draw(cx);
+    }
+
+    fn active_block(smep: &Entity<Smep>, cx: &VisualTestContext) -> Entity<TextareaState> {
+        cx.read(|cx| smep.read(cx).rendered.read(cx).active_editor())
+            .expect("a block is being edited")
+    }
+
+    #[gpui_kit::test]
+    fn editing_a_block_in_the_rendered_view_writes_through(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\npara\n\n- x");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+        assert_eq!(value(&block, cx), "para");
+        assert_eq!(
+            cx.read(|cx| block.read(cx).cursor()),
+            4,
+            "cursor at the block's end"
+        );
+
+        type_text(&block, "para two", cx);
+        assert_eq!(value(&document, cx), "# Title\n\npara two\n\n- x");
+        assert!(dirty(&smep, cx));
+
+        // Grow the block into two paragraphs; the document follows exactly.
+        type_text(&block, "para two\n\nthree", cx);
+        assert_eq!(value(&document, cx), "# Title\n\npara two\n\nthree\n\n- x");
+
+        // Moving to another block keeps everything and edits that one.
+        activate_block(&smep, 0..7, cx);
+        let block = active_block(&smep, cx);
+        assert_eq!(value(&block, cx), "# Title");
+        type_text(&block, "# Big Title", cx);
+        assert_eq!(
+            value(&document, cx),
+            "# Big Title\n\npara two\n\nthree\n\n- x"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_new_block_at_the_end_gets_its_blank_line(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+
+        cx.update(|window, cx| {
+            rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
+        });
+        draw(cx);
+        let block = active_block(&smep, cx);
+        type_text(&block, "new", cx);
+        assert_eq!(value(&document, cx), "# Title\n\nnew");
+        type_text(&block, "new text", cx);
+        assert_eq!(
+            value(&document, cx),
+            "# Title\n\nnew text",
+            "the gap is added once"
+        );
+
+        // CRLF documents get a CRLF gap.
+        let (smep, cx) = open(cx, "a\r\nb");
+        let document = cx.read(|cx| smep.read(cx).editor.clone());
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        cx.update(|window, cx| {
+            rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
+        });
+        draw(cx);
+        let block = active_block(&smep, cx);
+        type_text(&block, "c", cx);
+        assert_eq!(value(&document, cx), "a\r\nb\r\n\r\nc");
+    }
+
+    #[gpui_kit::test]
+    fn a_slash_in_a_block_opens_the_menu_and_inserts_there(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        cx.update(|window, cx| {
+            rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
+        });
+        draw(cx);
+
+        cx.simulate_input("/");
+        assert!(menu_open(&smep, cx), "the slash in a block opens the menu");
+        draw(cx);
+        cx.simulate_keystrokes("down down enter");
+        cx.run_until_parked();
+
+        let block = active_block(&smep, cx);
+        assert_eq!(value(&block, cx), "## ");
+        assert_eq!(value(&document, cx), "# Title\n\n## ");
+        assert!(!menu_open(&smep, cx));
+    }
+
+    #[gpui_kit::test]
+    fn saving_from_a_block_editor_writes_the_whole_document(cx: &mut TestAppContext) {
+        let dir = TempDir::new("block-save");
+        let path = dir.path("blocks.md");
+        std::fs::write(&path, "# Title\n\npara\n").unwrap();
+        let (smep, cx) = open_document(cx, Document::read(path.clone()).unwrap());
+        rendered_mode(&smep, cx);
+
+        // Activating a block focuses its editor; the shortcut must still
+        // reach the root from there.
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+        assert!(cx.update(|window, cx| block.focus_handle(cx).is_focused(window)));
+        type_text(&block, "para (edited)", cx);
+        assert!(dirty(&smep, cx));
+
+        cx.simulate_keystrokes(&primary("s"));
+        cx.run_until_parked();
+
+        assert!(!dirty(&smep, cx));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Title\n\npara (edited)\n"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_click_below_the_blocks_starts_a_focused_block_at_the_end(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title");
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+
+        // Well under the one heading, inside the view.
+        mouse_down(cx, MouseButton::Left, 300., 500.);
+        draw(cx);
+
+        let block = active_block(&smep, cx);
+        assert!(
+            cx.update(|window, cx| block.focus_handle(cx).is_focused(window)),
+            "the new block keeps focus after the view's own click handling"
+        );
+        assert!(!cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)));
+        type_text(&block, "tail", cx);
+        assert_eq!(value(&editor(&smep, cx), cx), "# Title\n\ntail");
+    }
+
+    #[gpui_kit::test]
+    fn an_emptied_block_stays_on_screen_and_takes_typing(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\npara\n\n- x");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+
+        type_text(&block, "", cx);
+        assert_eq!(value(&document, cx), "# Title\n\n\n\n- x");
+        draw(cx);
+
+        // Keys reach the editor only while it is painted.
+        cx.simulate_input("n");
+        cx.run_until_parked();
+        assert_eq!(value(&block, cx), "n");
+        assert_eq!(value(&document, cx), "# Title\n\nn\n\n- x");
+    }
+
+    #[gpui_kit::test]
+    fn a_change_from_elsewhere_ends_the_block_edit(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\npara");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let active = |cx: &VisualTestContext| cx.read(|cx| rendered.read(cx).active_editor());
+
+        // Typing in the source view moves the block.
+        activate_block(&smep, 9..13, cx);
+        type_text(&document, "# Longer Title\n\npara", cx);
+        assert!(active(cx).is_none(), "the block's offsets went stale");
+
+        // Opening another document.
+        activate_block(&smep, 9..13, cx);
+        assert!(active(cx).is_some());
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.load(
+                    Document {
+                        path: None,
+                        text: "new".into(),
+                        format: PreviewFormat::Markdown,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(active(cx).is_none());
+
+        // The block's own commits do not end the edit.
+        activate_block(&smep, 0..3, cx);
+        let block = active_block(&smep, cx);
+        type_text(&block, "newer", cx);
+        type_text(&block, "newest", cx);
+        assert!(active(cx).is_some());
+        assert_eq!(value(&document, cx), "newest");
+    }
+
+    #[gpui_kit::test]
+    fn escape_ends_the_block_edit_and_keeps_the_text(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\npara");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+        type_text(&block, "para!", cx);
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        assert!(cx.read(|cx| rendered.read(cx).active_editor().is_none()));
+        assert_eq!(value(&document, cx), "# Title\n\npara!");
+        assert!(
+            cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)),
+            "focus returns to the view so shortcuts keep working"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_block_editor_grows_with_its_text(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\n- a\n- b\n- c\n- d");
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 9..24, cx);
+        let block = active_block(&smep, cx);
+        draw(cx);
+
+        let line_height = cx
+            .read(|cx| block.read(cx).line_height())
+            .expect("laid out");
+        let height = cx.read(|cx| block.read(cx).input_bounds().size.height);
+        assert!(
+            height >= line_height * 4.,
+            "four lines need four rows: {height:?} < 4 × {line_height:?}"
+        );
     }
 
     #[gpui_kit::test]

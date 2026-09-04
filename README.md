@@ -7,7 +7,8 @@
 **smep** is a markdown editor with live preview, built in pure Rust on the
 [GPUI](https://www.gpui.rs) framework (the UI toolkit behind the Zed editor).
 A frameless window with a small menu bar in its title bar (hide it with a
-shortcut), and three views: source, split, rendered.
+shortcut), and three views: source, split, and a rendered view you edit in
+place, block by block.
 
 ## Status
 
@@ -17,6 +18,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 ## What it does
 
 - Source, split (resizable) or rendered view; the preview updates as you type.
+- The rendered view edits in place: click a block and it turns into its
+  Markdown source, sized to its text; click elsewhere or press Escape and it
+  renders again. A click below the last block starts a new one; `/` there
+  opens the block menu.
 - Frameless window: File / Edit / View menus live in the title bar and can be
   hidden; full screen on a key.
 - A menu of blocks (headings, lists, task list, quote, code block, table,
@@ -46,6 +51,8 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Show or hide the menu bar | Ctrl+Shift+M | Cmd+Shift+M |
 | Full screen | F11 | Ctrl+Cmd+F |
 | Insert block (on an empty line) | `/` | `/` |
+| Edit a block in the rendered view | click it | click it |
+| Finish editing a block | Escape (or click elsewhere) | Escape (or click elsewhere) |
 | Block menu / clipboard | right-click the editor | right-click the editor |
 | Preview theme | right-click the preview | right-click the preview |
 | Find in editor | Ctrl+F | Cmd+F |

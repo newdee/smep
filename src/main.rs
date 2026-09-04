@@ -7,6 +7,7 @@ mod highlight;
 mod insert;
 mod io;
 mod keymap;
+mod rendered;
 mod settings;
 mod theme;
 

@@ -6,7 +6,9 @@
 
 use std::ops::Range;
 
-use gpui_kit::component::input::{EditorState, RopeExt as _};
+// The helpers work on any multi-line input: the source editor and the
+// rendered view's block editors are different kinds of input.
+use gpui_kit::base::input::{InputBaseState, MultiLineMode, RopeExt as _};
 use gpui_kit::{Context, Window};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +85,7 @@ impl BlockKind {
 }
 
 /// Byte range of the cursor's line, without its line break (`\r\n` included).
-pub fn cursor_line_range(state: &EditorState) -> Range<usize> {
+pub fn cursor_line_range<M: MultiLineMode>(state: &InputBaseState<M>) -> Range<usize> {
     let row = state.cursor_position().line as usize;
     let text = state.text();
     let start = text.line_start_offset(row);
@@ -95,7 +97,7 @@ pub fn cursor_line_range(state: &EditorState) -> Range<usize> {
 }
 
 /// What the cursor's line holds, with surrounding whitespace removed.
-pub fn cursor_line_trimmed(state: &EditorState) -> String {
+pub fn cursor_line_trimmed<M: MultiLineMode>(state: &InputBaseState<M>) -> String {
     let range = cursor_line_range(state);
     state.text().slice(range).to_string().trim().to_string()
 }
@@ -105,11 +107,11 @@ pub fn cursor_line_trimmed(state: &EditorState) -> String {
 /// A blank line (or the `/` that opened the menu) is replaced. A line with
 /// content keeps it: the skeleton goes on a new line below, with the
 /// document's own line ending.
-pub fn insert_block(
-    state: &mut EditorState,
+pub fn insert_block<M: MultiLineMode>(
+    state: &mut InputBaseState<M>,
     kind: BlockKind,
     window: &mut Window,
-    cx: &mut Context<EditorState>,
+    cx: &mut Context<InputBaseState<M>>,
 ) {
     let line = cursor_line_range(state);
     let (snippet, cursor) = kind.snippet();

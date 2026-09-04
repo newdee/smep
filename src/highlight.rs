@@ -123,6 +123,27 @@ pub fn block_start_lines(text: &str) -> Vec<usize> {
         .unwrap_or_default()
 }
 
+/// The byte range of every top-level block, in document order. Blank lines
+/// between blocks belong to no block, and no block ends in a line break
+/// (the parser lets a list keep the blank line after its nested list).
+pub fn block_ranges(text: &str) -> Vec<Range<usize>> {
+    let Ok(root) = markdown::to_mdast(text, &ParseOptions::gfm()) else {
+        return Vec::new();
+    };
+    root.children()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.position().map(|p| p.start.offset..p.end.offset))
+                .map(|range| {
+                    let trimmed = text[range.clone()].trim_end_matches(['\r', '\n']);
+                    range.start..range.start + trimmed.len()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Every styled node in `text`, outer nodes before the nodes inside them.
 pub fn spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
@@ -237,6 +258,27 @@ mod tests {
         );
         assert_eq!(block_start_lines("a\r\n\r\nb"), vec![0, 2]);
         assert!(block_start_lines("").is_empty());
+    }
+
+    #[test]
+    fn block_ranges_cover_each_block_without_the_gaps() {
+        let text = "# A\n\npara\nmore\n\n- x\n- y\n";
+        assert_eq!(block_ranges(text), vec![0..3, 5..14, 16..23]);
+        assert_eq!(&text[0..3], "# A");
+        assert_eq!(&text[5..14], "para\nmore");
+        assert_eq!(&text[16..23], "- x\n- y");
+        assert!(block_ranges("").is_empty());
+        assert_eq!(block_ranges("a\r\n\r\nb"), vec![0..1, 5..6]);
+    }
+
+    #[test]
+    fn a_list_with_a_nested_list_does_not_keep_the_blank_line_after_it() {
+        let text = "- a\n  - b\n\n> q\n";
+        let ranges = block_ranges(text);
+        assert_eq!(&text[ranges[0].clone()], "- a\n  - b");
+        assert_eq!(&text[ranges[1].clone()], "> q");
+        let text = "- a\r\n  - b\r\n\r\n> q\r\n";
+        assert_eq!(&text[block_ranges(text)[0].clone()], "- a\r\n  - b");
     }
 
     #[test]
