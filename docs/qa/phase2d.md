@@ -48,7 +48,21 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33840696663 for `b1ea02d`, all three jobs green:
+
+| Job | Wall time |
+|---|---|
+| ubuntu-latest | 2 m 33 s |
+| windows-latest | 12 m 21 s (new crates serde / toml / dirs compiled cold) |
+| macos-latest | 3 m 02 s |
+
+The 43 tests pass on all three platforms, including the mouse-driven ones.
+
+Round 3 result: 0 findings.
+
+## Verdict
+
+Three consecutive clean rounds. Phase 2d accepted.
 
 ## Open items carried forward
 
