@@ -89,9 +89,34 @@ Windows, on the tree with `strip = true` and `checkout@v5`:
 
 Round 5 result: 0 findings.
 
-## Round 6 — (pending)
+## Round 6 — platforms again, on `2d840bc` (clean streak 2)
 
-## Round 7 — (pending)
+CI run 33831455782, all three jobs green:
+
+| Job | Wall time (warm cache) | Release binary | Change vs round 4 |
+|---|---|---|---|
+| ubuntu-latest | 8 m 42 s | 37,664,304 bytes | −27.6 % |
+| windows-latest | 14 m 56 s | 21,873,152 bytes (+ 9.8 MB `.pdb`) | ±0 (symbols were never in the exe) |
+| macos-latest | 6 m 48 s | 16,034,304 bytes | −25.1 % |
+
+- No annotations after the `checkout@v5` bump.
+- Linux stays the largest: it links both the X11 and Wayland backends. LTO/opt-level tuning is a release-time decision, not a Phase 1 item.
+
+Round 6 result: 0 findings.
+
+## Round 7 — static consistency re-check (clean streak 3)
+
+- Diff since the placeholder (`3e15dfc..HEAD`): 7 files, all within the Phase 1 scope (`ci.yml`, `Cargo.{toml,lock}`, `docs/dev.md`, `docs/qa/phase1.md`, `src/{app,main}.rs`).
+- Risky calls in `src/`: exactly one `expect`, on `open_window` in `main.rs`. There is nothing to do without a window, so it stays.
+- apt package list in `docs/dev.md` and `.github/workflows/ci.yml`: identical set for build packages; `dev.md` additionally lists runtime-only packages (`mesa-vulkan-drivers`, `vulkan-tools`, `fonts-noto-cjk`), which CI does not need.
+- `rust-version = "1.97"` matches the toolchain Zed pins for this `gpui-pre` snapshot; CI builds on stable 1.98.
+- Docs-only pushes now skip CI (`paths-ignore`), so QA-log commits no longer burn a 30-minute matrix.
+
+Round 7 result: 0 findings.
+
+## Verdict
+
+Three consecutive clean rounds (5, 6, 7) after the last fix. Phase 1 is accepted for Windows, macOS and Linux-CI. **Not yet verified: a WSLg window on the user's machine** — the build packages are still missing there. That check reopens Phase 1 if it fails.
 
 ## Open items carried into Phase 2
 
