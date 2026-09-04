@@ -54,9 +54,11 @@ Xcode command line tools, then `cargo run`.
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml`, commit, push.
+1. Bump `version` in `Cargo.toml`, run `cargo check` so `Cargo.lock` follows,
+   commit, push, wait for CI.
 2. `cargo publish --locked` (the crates.io token comes from the gitignored
-   `.env`: `set -a; . ./.env; set +a` first).
+   `.env`: `set -a; . ./.env; set +a` first; in PowerShell,
+   `Get-Content .env | ForEach-Object { if ($_ -match '^(\w+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }`).
 3. `git tag -a vX.Y.Z -m "smep X.Y.Z" && git push origin vX.Y.Z`.
 
 The tag runs `.github/workflows/release.yml`, which drafts a GitHub release
