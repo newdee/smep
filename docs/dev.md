@@ -74,8 +74,10 @@ exist (they are the same six magpie uses):
 | `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization: Apple ID, an app-specific password, the team id |
 
-Set them with `gh secret set NAME --repo newdee/smep`. GitHub cannot copy
-secrets between repositories, so they have to be entered again.
+GitHub cannot copy secrets between repositories, so they have to be entered
+once more. `scripts/set-apple-secrets.sh path/to/DeveloperID.p12` (or the
+`.ps1` twin on Windows) asks for each value with hidden input and stores all
+six; nothing is echoed or written to disk.
 
 ## Checks before pushing
 
