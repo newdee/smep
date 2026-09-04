@@ -68,6 +68,9 @@ jobs:
     runs-on: macos-latest
     env:
       APP: smep.app
+      # `secrets` is not allowed in a step's `if`; a job env may read it.
+      HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -117,7 +120,7 @@ jobs:
           EOF
 
       - name: Import the Developer ID certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        if: env.HAS_CERTIFICATE == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -144,7 +147,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Notarize and staple
-        if: ${{ env.SIGN == '1' && secrets.APPLE_ID != '' }}
+        if: env.SIGN == '1' && env.HAS_NOTARY == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
