@@ -446,18 +446,34 @@ impl Smep {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let document = Document::read(path.clone());
-            let _ = this.update_in(cx, |this, window, cx| match document {
-                Ok(document) => this.load(document, window, cx),
-                Err(err) => this.report(
-                    &format!("Could not open {}", path.display()),
-                    &err.to_string(),
-                    window,
-                    cx,
-                ),
-            });
+            let _ = this.update_in(cx, |this, window, cx| this.load_path(path, window, cx));
         })
         .detach();
+    }
+
+    /// Open the file at `path` in this window, asking about unsaved changes
+    /// first. This is what a double-click in the file manager ends up in.
+    pub fn open_document_at(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let proceed = self.confirm_discard(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if proceed.await {
+                let _ = this.update_in(cx, |this, window, cx| this.load_path(path, window, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Read `path` into the buffer, or report why not.
+    fn load_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        match Document::read(path.clone()) {
+            Ok(document) => self.load(document, window, cx),
+            Err(err) => self.report(
+                &format!("Could not open {}", path.display()),
+                &err.to_string(),
+                window,
+                cx,
+            ),
+        }
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
@@ -1091,6 +1107,61 @@ mod tests {
         assert_eq!(cx.read(|cx| smep.read(cx).format), PreviewFormat::Html);
         assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(path));
         assert!(!dirty(&smep, cx));
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_path_from_the_os_asks_about_unsaved_changes_first(cx: &mut TestAppContext) {
+        let dir = TempDir::new("os-open");
+        let path = dir.path("incoming.md");
+        std::fs::write(&path, "# From Finder").unwrap();
+        let (smep, cx) = open(cx, "");
+        let editor = editor(&smep, cx);
+
+        // Clean buffer: opens right away.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.open_document_at(path.clone(), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(value(&editor, cx), "# From Finder");
+        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(path.clone()));
+
+        // Dirty buffer: the prompt comes first; "Cancel" keeps the edits.
+        type_text(&editor, "edited", cx);
+        let other = dir.path("other.md");
+        std::fs::write(&other, "other").unwrap();
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.open_document_at(other.clone(), window, cx)
+            })
+        });
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert_eq!(value(&editor, cx), "edited");
+
+        // "Don't Save" lets the new file in.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.open_document_at(other.clone(), window, cx)
+            })
+        });
+        cx.simulate_prompt_answer("Don't Save");
+        cx.run_until_parked();
+        assert_eq!(value(&editor, cx), "other");
+        assert!(!dirty(&smep, cx));
+
+        // A missing file reports instead of failing silently.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.open_document_at(dir.path("missing.md"), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt(), "an error dialog is shown");
+        cx.simulate_prompt_answer("OK");
+        assert_eq!(value(&editor, cx), "other");
     }
 
     #[gpui_kit::test]

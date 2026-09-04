@@ -12,6 +12,7 @@ mod theme;
 
 use std::path::PathBuf;
 
+use futures::StreamExt as _;
 use gpui_kit::assets::Assets;
 use gpui_kit::component::Root;
 use gpui_kit::*;
@@ -32,7 +33,18 @@ fn main() {
         None => Document::empty(),
     };
 
-    gpui_kit::application().with_assets(Assets).run(move |cx| {
+    // Files opened through the OS (a double-click in Finder, "Open with")
+    // arrive as file:// URLs, possibly before the window exists; they queue
+    // here and the window drains the queue once it is up.
+    let (opens, mut requested) = futures::channel::mpsc::unbounded::<PathBuf>();
+    let app = gpui_kit::application().with_assets(Assets);
+    app.on_open_urls(move |urls| {
+        for path in urls.iter().filter_map(|url| io::path_from_file_url(url)) {
+            let _ = opens.unbounded_send(path);
+        }
+    });
+
+    app.run(move |cx| {
         gpui_kit::init(cx);
         keymap::init(cx);
 
@@ -46,11 +58,24 @@ fn main() {
         };
 
         cx.spawn(async move |cx| {
-            cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| app::Smep::new(document, settings, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("failed to open the smep window");
+            let mut smep = None;
+            let window = cx
+                .open_window(options, |window, cx| {
+                    let view = cx.new(|cx| app::Smep::new(document, settings, window, cx));
+                    smep = Some(view.clone());
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .expect("failed to open the smep window");
+            let smep = smep.expect("the window builder ran");
+
+            while let Some(path) = requested.next().await {
+                let opened = window.update(cx, |_, window, cx| {
+                    smep.update(cx, |this, cx| this.open_document_at(path, window, cx));
+                });
+                if opened.is_err() {
+                    break; // the window is gone
+                }
+            }
         })
         .detach();
     });

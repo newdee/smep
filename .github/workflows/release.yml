@@ -38,8 +38,9 @@ jobs:
       - run: cargo build --release --locked
       - name: Package
         run: |
-          mkdir -p dist
-          tar -C target/release -czf "dist/smep-$VERSION-x86_64-linux.tar.gz" smep
+          mkdir -p dist stage
+          cp target/release/smep assets/smep.desktop stage/
+          tar -C stage -czf "dist/smep-$VERSION-x86_64-linux.tar.gz" smep smep.desktop
       - uses: actions/upload-artifact@v4
         with:
           name: linux

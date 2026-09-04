@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=smep
+GenericName=Markdown Editor
+Comment=A Simple Markdown Editor & Previewer, written in Rust
+Exec=smep %f
+Icon=text-markdown
+Terminal=false
+Categories=Office;TextEditor;Utility;
+MimeType=text/markdown;text/x-markdown;text/html;
+Keywords=markdown;editor;preview;

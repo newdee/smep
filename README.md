@@ -56,6 +56,18 @@ smep notes.md
 Building from source needs a Rust toolchain and, on Linux, a few system
 libraries; see [docs/dev.md](docs/dev.md).
 
+## Make it the default for `.md`
+
+- **macOS**: use the `smep.app` from a GitHub release (a `cargo install`
+  binary has no bundle, so Finder cannot pick it). Right-click a `.md` file,
+  Get Info, Open with: smep, Change All. Files opened this way land in the
+  running window.
+- **Windows**: `scripts\register-windows.ps1` adds smep to the "Open with"
+  list (current user, no admin); then choose it once in Settings, Apps,
+  Default apps, or right-click, Open with, Always.
+- **Linux**: copy `assets/smep.desktop` to `~/.local/share/applications/`
+  and run `xdg-mime default smep.desktop text/markdown`.
+
 ## License
 
 Licensed under either of

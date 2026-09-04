@@ -46,6 +46,43 @@ pub fn write(path: &Path, text: &str) -> io::Result<()> {
     std::fs::write(path, text)
 }
 
+/// The local path in a `file://` URL, as macOS hands them to an app that a
+/// document was opened with. Other schemes give `None`.
+pub fn path_from_file_url(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    // `file://localhost/x` and `file:///x` both mean `/x`.
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let decoded = percent_decode(rest)?;
+    // `file:///C:/x` is a Windows path; drop the leading slash there.
+    let decoded = match decoded.as_bytes() {
+        [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() && cfg!(windows) => {
+            decoded[1..].to_string()
+        }
+        _ => decoded,
+    };
+    Some(PathBuf::from(decoded))
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +110,27 @@ mod tests {
         write(&path, &doc.text).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\r\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn file_urls_become_paths() {
+        assert_eq!(
+            path_from_file_url("file:///Users/k/notes/a%20b.md"),
+            Some(PathBuf::from("/Users/k/notes/a b.md"))
+        );
+        assert_eq!(
+            path_from_file_url("file://localhost/tmp/%E4%B8%AD%E6%96%87.md"),
+            Some(PathBuf::from("/tmp/中文.md"))
+        );
+        assert_eq!(path_from_file_url("https://example.com/a.md"), None);
+        assert_eq!(path_from_file_url("file://host/a.md"), None);
+        assert_eq!(path_from_file_url("file:///bad%zz"), None);
+        if cfg!(windows) {
+            assert_eq!(
+                path_from_file_url("file:///C:/docs/a.md"),
+                Some(PathBuf::from("C:/docs/a.md"))
+            );
+        }
     }
 
     #[test]
