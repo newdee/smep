@@ -23,7 +23,7 @@ Also: the title-bar menus and the popup menus now dispatch their actions to the 
 |---|---|---|
 | `cargo fmt --all --check` | exit 0 | clean |
 | `cargo clippy --all-targets --locked -- -D warnings` | exit 0 | clean |
-| `cargo test --locked` × 3 | 59 passed, 0 failed each time (48 → 59: +10 headless, +1 unit) | |
+| `cargo test --locked` × 3 | 59 passed, 0 failed each time (48 → 59: +9 headless, +2 unit) | |
 
 ## Round 1 — mechanism (Windows, real window, IME in English mode)
 
@@ -53,7 +53,9 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33857480016 for `78e0b42`, all three jobs green: ubuntu 1 m 34 s, windows 2 m 56 s, macos 1 m 25 s. The 59 tests pass everywhere, the mouse-driven and key-driven ones included.
+
+Round 3 result: 0 findings.
 
 ## Not verified here
 
