@@ -7,9 +7,10 @@ so `cargo install smep` and `cargo build` work from a plain checkout.
 ## Toolchain
 
 - Rust stable, at least the `rust-version` in `Cargo.toml`.
-- No tree-sitter, no C toolchain requirements beyond what the platform SDK
-  already provides. `cmake` and a C compiler are still needed because the
-  TLS stack GPUI ships (`aws-lc-sys`) builds C code.
+- A C compiler. smep itself is pure Rust and uses no tree-sitter, but the
+  TLS stack GPUI ships (`aws-lc-sys`) builds C code. It uses `cmake` when
+  present and falls back to the plain C compiler otherwise (verified on
+  Windows with only the MSVC build tools installed).
 
 ## Linux (including WSL2 with WSLg)
 
@@ -43,9 +44,9 @@ cargo run -- README.md
 
 ## Windows
 
-Install the MSVC build tools (the Rust installer offers them) and CMake, then
-`cargo run`. Windows is verified by CI on every push; day-to-day development
-happens on Linux.
+Install the MSVC build tools (the Rust installer offers them), then
+`cargo run`. Nothing else is required. Windows is verified by CI on every
+push; day-to-day development happens on Linux.
 
 ## macOS
 

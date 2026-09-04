@@ -19,3 +19,7 @@ markdown = "1"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6", features = ["test-support"] }
+
+[profile.release]
+# One small static binary is a project goal; symbols alone were 30 MB on Linux.
+strip = true
