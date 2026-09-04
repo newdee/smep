@@ -10,8 +10,8 @@ Two panes, no toolbar: write on the left, read on the right.
 
 ## Status
 
-`0.1.0` is on its way; `main` already does everything below. The crates.io
-release `0.0.1` is a placeholder that only prints its version.
+`0.1.0` is the first usable release. Expect rough edges; the editor and
+preview are built on gpui-kit and gpui-pre, which are themselves young.
 
 ## What it does
 
