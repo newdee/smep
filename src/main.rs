@@ -3,6 +3,7 @@
 //! Usage: `smep [FILE]`. With no argument the editor starts empty.
 
 mod app;
+mod highlight;
 mod insert;
 mod io;
 mod keymap;

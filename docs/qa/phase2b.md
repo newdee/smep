@@ -53,7 +53,21 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33833537596 for `449379c`, all three jobs green with warm caches:
+
+| Job | Wall time |
+|---|---|
+| ubuntu-latest | 1 m 19 s |
+| windows-latest | 2 m 56 s |
+| macos-latest | 1 m 40 s |
+
+The 20 tests, including the dialog-driven ones, pass on all three platforms.
+
+Round 3 result: 0 findings.
+
+## Verdict
+
+Three consecutive clean rounds. Phase 2b accepted.
 
 ## Open items carried forward
 

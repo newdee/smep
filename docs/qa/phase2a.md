@@ -50,7 +50,21 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33833066956 for `1effe14`, all three jobs green with warm caches:
+
+| Job | Wall time |
+|---|---|
+| ubuntu-latest | 1 m 27 s |
+| windows-latest | 2 m 27 s |
+| macos-latest | 2 m 02 s |
+
+The 10 tests pass on all three platforms.
+
+Round 3 result: 0 findings.
+
+## Verdict
+
+Three consecutive clean rounds. Phase 2a accepted.
 
 ## Open items carried forward
 

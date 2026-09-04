@@ -1,17 +1,22 @@
 //! The root view: a Markdown editor on the left, its live preview on the right.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use gpui_kit::base::POPUP_PRIORITY;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, RopeExt as _};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewState};
 use gpui_kit::component::{ActiveTheme as _, Theme, h_resizable, resizable_panel};
 use gpui_kit::*;
 
+use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{self, Open, Save, SaveAs};
+
+/// How long typing has to pause before the preview re-parses.
+pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(80);
 
 /// How the preview interprets the source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,16 +46,68 @@ struct InsertMenu {
 /// The editor pane and the preview pane, kept in sync.
 ///
 /// The editor state owns the text. Every change it emits is copied into
-/// `source`, which is what the preview renders. `saved` is the text as it
-/// last was on disk; the document is dirty while the two differ.
+/// `source` at once (that drives the dirty marker) and handed to the preview
+/// after a short pause in typing (`previewed` is what the preview has).
+/// `saved` is the text as it last was on disk; the document is dirty while
+/// `source` differs from it.
 pub struct Smep {
     editor: Entity<EditorState>,
+    preview: Entity<TextViewState>,
     path: Option<PathBuf>,
     format: PreviewFormat,
     source: SharedString,
+    previewed: SharedString,
     saved: SharedString,
+    preview_refresh: Option<Task<()>>,
+    /// Start line of each top-level block in `previewed`; one preview item each.
+    blocks: Vec<usize>,
+    /// The editor's top line last pushed to the preview.
+    scroll_sync: Option<usize>,
     insert_menu: Option<InsertMenu>,
     _subscriptions: Vec<Subscription>,
+}
+
+fn preview_state(
+    format: PreviewFormat,
+    text: &str,
+    cx: &mut Context<TextViewState>,
+) -> TextViewState {
+    match format {
+        PreviewFormat::Markdown => TextViewState::markdown(text, cx),
+        PreviewFormat::Html => TextViewState::html(text, cx),
+    }
+}
+
+/// The first buffer line the editor currently renders, once it has laid
+/// out. `None` before the first layout.
+///
+/// The editor lays out only the rows on screen. `range_to_bounds` maps every
+/// offset above them to the first rendered line, the rendered lines to
+/// increasing tops, and everything below to `None`. So the first rendered
+/// line is the last one that still reports the same top as line 0, found by
+/// binary search. This holds with soft wrap, where display rows and buffer
+/// lines differ.
+fn top_visible_line(state: &EditorState) -> Option<usize> {
+    let text = state.text();
+    let lines = text.lines_len();
+    if lines == 0 {
+        return Some(0);
+    }
+    let top_of = |row: usize| {
+        let offset = text.line_start_offset(row);
+        state.range_to_bounds(&(offset..offset)).map(|b| b.top())
+    };
+    let first_top = top_of(0)?;
+    let (mut last_same, mut beyond) = (0, lines);
+    while last_same + 1 < beyond {
+        let mid = (last_same + beyond) / 2;
+        if top_of(mid) == Some(first_top) {
+            last_same = mid;
+        } else {
+            beyond = mid;
+        }
+    }
+    Some(last_same)
 }
 
 impl Smep {
@@ -60,12 +117,17 @@ impl Smep {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .default_value(document.text.clone())
+                .language(highlight::LANGUAGE)
                 .soft_wrap(true)
                 .line_number(false)
                 .searchable(true)
                 .placeholder("Write here. Type / on an empty line to insert a block.")
         });
-        editor.update(cx, |state, cx| state.focus(window, cx));
+        editor.update(cx, |state, cx| {
+            state.set_highlighter_factory(highlight::factory(), cx);
+            state.focus(window, cx);
+        });
+        let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
 
         let subscriptions = vec![
             cx.subscribe_in(
@@ -78,6 +140,7 @@ impl Smep {
                         if this.is_dirty() != was_dirty {
                             this.refresh_title(window);
                         }
+                        this.schedule_preview_refresh(window, cx);
                         if Self::slash_typed(editor.read(cx)) {
                             this.open_insert_menu(window, cx);
                         }
@@ -115,18 +178,95 @@ impl Smep {
             }
         });
 
-        let saved: SharedString = document.text.into();
+        let text = document.text;
+        let saved: SharedString = text.clone().into();
         let this = Self {
             editor,
+            preview,
             path: document.path,
             format: document.format,
             source: saved.clone(),
+            previewed: saved.clone(),
             saved,
+            preview_refresh: None,
+            blocks: highlight::block_start_lines(&text),
+            scroll_sync: None,
             insert_menu: None,
             _subscriptions: subscriptions,
         };
         this.refresh_title(window);
         this
+    }
+
+    /// Re-parse the preview once typing pauses. Each call restarts the wait.
+    fn schedule_preview_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview_refresh = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
+            let _ = this.update(cx, |this, cx| this.refresh_preview(cx));
+        }));
+    }
+
+    /// Hand the current source to the preview, if it does not have it yet.
+    fn refresh_preview(&mut self, cx: &mut Context<Self>) {
+        if self.previewed == self.source {
+            return;
+        }
+        self.previewed = self.source.clone();
+        let text = self.previewed.clone();
+        self.blocks = highlight::block_start_lines(&text);
+        self.preview
+            .update(cx, |state, cx| state.set_text(&text, cx));
+        self.scroll_sync = None;
+        cx.notify();
+    }
+
+    /// Point the preview at `text` in `format`, right away.
+    fn set_preview(&mut self, format: PreviewFormat, cx: &mut Context<Self>) {
+        self.preview_refresh = None;
+        self.previewed = self.source.clone();
+        let text = self.previewed.clone();
+        self.blocks = highlight::block_start_lines(&text);
+        if format != self.format {
+            self.format = format;
+            self.preview = cx.new(|cx| preview_state(format, &text, cx));
+        } else {
+            self.preview
+                .update(cx, |state, cx| state.set_text(&text, cx));
+        }
+        self.scroll_sync = None;
+        cx.notify();
+    }
+
+    /// Scroll the preview to the block that holds the editor's top line.
+    /// Editor scrolling drives the preview; the preview never drives the editor.
+    fn sync_preview_scroll(&mut self, cx: &mut Context<Self>) {
+        let Some(top) = top_visible_line(self.editor.read(cx)) else {
+            return;
+        };
+        if self.scroll_sync == Some(top) {
+            return;
+        }
+        self.scroll_sync = Some(top);
+
+        let list = self.preview.read(cx).list_state().clone();
+        let count = list.item_count();
+        if count == 0 {
+            return;
+        }
+        let item_ix = if count == self.blocks.len() {
+            // One preview item per block: the last block starting at or above `top`.
+            self.blocks
+                .partition_point(|&start| start <= top)
+                .saturating_sub(1)
+        } else {
+            // The preview is mid-parse or split blocks differently; go proportional.
+            let lines = self.editor.read(cx).text().lines_len().max(1);
+            (count * top / lines).min(count - 1)
+        };
+        list.scroll_to(ListOffset {
+            item_ix,
+            offset_in_item: px(0.),
+        });
     }
 
     /// The window title for a document: `● name — smep` while dirty.
@@ -146,14 +286,13 @@ impl Smep {
     /// Replace the buffer with `document`, as after Open.
     fn load(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
         self.path = document.path;
-        self.format = document.format;
         self.saved = document.text.clone().into();
         self.source = self.saved.clone();
         // `set_value` emits no change event, so `source` is set by hand above.
         self.editor
             .update(cx, |state, cx| state.set_value(document.text, window, cx));
+        self.set_preview(document.format, cx);
         self.refresh_title(window);
-        cx.notify();
     }
 
     /// Write the buffer to `path` and adopt it as the document's path.
@@ -163,8 +302,11 @@ impl Smep {
             Ok(()) => {
                 self.saved = text.clone();
                 self.source = text;
-                self.format = PreviewFormat::for_path(&path);
+                let format = PreviewFormat::for_path(&path);
                 self.path = Some(path);
+                if format != self.format {
+                    self.set_preview(format, cx);
+                }
                 self.refresh_title(window);
                 cx.notify();
                 true
@@ -423,9 +565,14 @@ impl Smep {
 
 impl Render for Smep {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text_view = match self.format {
-            PreviewFormat::Markdown => TextView::markdown("preview", self.source.clone()),
-            PreviewFormat::Html => TextView::html("preview", self.source.clone()),
+        // The editor lays out before the preview (it comes first in the
+        // split), so by the preview's prepaint the editor's rows for this
+        // frame are known and the preview can follow them in the same frame.
+        let follow_editor = {
+            let this = cx.weak_entity();
+            move |_, _: &mut Window, cx: &mut App| {
+                let _ = this.update(cx, |this, cx| this.sync_preview_scroll(cx));
+            }
         };
         let preview = div()
             .size_full()
@@ -433,7 +580,8 @@ impl Render for Smep {
             .bg(cx.theme().background)
             .px_6()
             .py_4()
-            .child(text_view.scrollable(true));
+            .on_prepaint(follow_editor)
+            .child(TextView::new(&self.preview).scrollable(true));
 
         let plus = self.render_plus(window, cx);
         let menu = self.render_insert_menu(window, cx);
@@ -471,7 +619,7 @@ mod tests {
     use gpui_kit::component::input::{EditorState, Position};
     use gpui_kit::{Entity, TestAppContext, VisualTestContext};
 
-    use super::{PreviewFormat, Smep};
+    use super::{PREVIEW_DEBOUNCE, PreviewFormat, Smep};
     use crate::insert::{self, BlockKind};
     use crate::io::Document;
     use crate::keymap::{Open, Save};
@@ -559,6 +707,54 @@ mod tests {
         type_text(&editor, "# Hello", cx);
 
         assert_eq!(cx.read(|cx| smep.read(cx).source.to_string()), "# Hello");
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_follows_after_a_pause_in_typing(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "");
+        let editor = editor(&smep, cx);
+
+        type_text(&editor, "# One", cx);
+        type_text(&editor, "# One two", cx);
+        assert_eq!(cx.read(|cx| smep.read(cx).previewed.to_string()), "");
+
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).previewed.to_string()),
+            "# One two"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn scrolling_the_editor_scrolls_the_preview(cx: &mut TestAppContext) {
+        let text: String = (1..=400).map(|n| format!("Paragraph {n}\n\n")).collect();
+        let (smep, cx) = open(cx, &text);
+        let editor = editor(&smep, cx);
+        draw(cx);
+        let list = cx.read(|cx| smep.read(cx).preview.read(cx).list_state().clone());
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        assert!(list.item_count() > 100, "one item per paragraph");
+
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_scroll_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-5000.)), cx)
+            });
+        });
+        draw(cx);
+        draw(cx);
+
+        // 5000 px at the editor's row height lands well past line 100; each
+        // paragraph is two buffer lines, so the preview item is about half that.
+        // No soft wrap kicks in for these short lines, so the display row the
+        // editor reports is also the buffer line.
+        let display_row = cx.read(|cx| editor.read(cx).visible_row_range().unwrap().start);
+        let top_line = cx.read(|cx| smep.read(cx).scroll_sync);
+        let top_line = top_line.expect("the editor has laid out");
+        assert!(top_line > 100, "editor top line {top_line}");
+        assert_eq!(top_line, display_row);
+        let item = list.logical_scroll_top().item_ix;
+        assert_eq!(item, top_line / 2, "preview item for line {top_line}");
     }
 
     #[gpui_kit::test]
@@ -678,6 +874,11 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(value(&editor, cx), "<b>bold</b>");
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).previewed.to_string()),
+            "<b>bold</b>",
+            "open refreshes the preview at once, no debounce"
+        );
         assert_eq!(
             cx.read(|cx| smep.read(cx).source.to_string()),
             "<b>bold</b>"
