@@ -52,6 +52,31 @@ push; day-to-day development happens on Linux.
 
 Xcode command line tools, then `cargo run`.
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, commit, push.
+2. `cargo publish --locked` (the crates.io token comes from the gitignored
+   `.env`: `set -a; . ./.env; set +a` first).
+3. `git tag -a vX.Y.Z -m "smep X.Y.Z" && git push origin vX.Y.Z`.
+
+The tag runs `.github/workflows/release.yml`, which drafts a GitHub release
+with a Linux tarball, a Windows zip and a universal macOS `smep.app`.
+Run it by hand for an existing tag with
+`gh workflow run release.yml -f tag=vX.Y.Z`.
+
+The macOS app is signed and notarized only when these repository secrets
+exist (they are the same six magpie uses):
+
+| Secret | Contents |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization: Apple ID, an app-specific password, the team id |
+
+Set them with `gh secret set NAME --repo newdee/smep`. GitHub cannot copy
+secrets between repositories, so they have to be entered again.
+
 ## Checks before pushing
 
 ```sh
