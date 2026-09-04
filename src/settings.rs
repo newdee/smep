@@ -10,13 +10,55 @@ use crate::theme::PreviewTheme;
 /// Overrides the config directory (mostly for tests and portable setups).
 pub const DIR_ENV: &str = "SMEP_CONFIG_DIR";
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Which panes the window shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ViewMode {
+    /// The Markdown source alone.
+    Source,
+    /// Source on the left, rendered preview on the right.
+    #[default]
+    Split,
+    /// The rendered document alone.
+    Rendered,
+}
+
+impl ViewMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Source => "Source",
+            Self::Split => "Split",
+            Self::Rendered => "Rendered",
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub preview_theme: PreviewTheme,
+    pub view_mode: ViewMode,
+    /// Whether the menu bar in the title bar is shown.
+    #[serde(default = "default_true")]
+    pub menu_bar: bool,
     /// Where these settings live; `None` means they are never written.
     #[serde(skip)]
     pub path: Option<PathBuf>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            preview_theme: PreviewTheme::default(),
+            view_mode: ViewMode::default(),
+            menu_bar: true,
+            path: None,
+        }
+    }
 }
 
 impl Settings {
@@ -88,14 +130,27 @@ mod tests {
         let settings = Settings {
             preview_theme: PreviewTheme::Night,
             path: Some(path.clone()),
+            ..Settings::default()
         };
         settings.save().unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
-            r#"preview_theme = "night""#
+            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true"
         );
         assert_eq!(Settings::load_from(path.clone()), settings);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn older_files_without_the_new_keys_still_load() {
+        let settings: Settings = toml::from_str("preview_theme = \"sepia\"\n").unwrap();
+        assert_eq!(settings.preview_theme, PreviewTheme::Sepia);
+        assert_eq!(settings.view_mode, ViewMode::Split);
+        assert!(settings.menu_bar);
+        let settings: Settings =
+            toml::from_str("view_mode = \"rendered\"\nmenu_bar = false\n").unwrap();
+        assert_eq!(settings.view_mode, ViewMode::Rendered);
+        assert!(!settings.menu_bar);
     }
 
     #[test]

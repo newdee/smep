@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use futures::StreamExt as _;
 use gpui_kit::assets::Assets;
-use gpui_kit::component::Root;
+use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
 
 use io::Document;
@@ -47,14 +47,15 @@ fn main() {
     app.run(move |cx| {
         gpui_kit::init(cx);
         keymap::init(cx);
+        cx.set_menus(keymap::native_menus());
 
+        // The window draws its own title bar (menus, document name, window
+        // controls); the platform frame is hidden.
         let options = WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(app::Smep::title_for(document.path.as_deref(), false).into()),
-                ..Default::default()
-            }),
             window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
-            ..Default::default()
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(WindowDecorations::Client),
+            ..TitleBar::window_options()
         };
 
         cx.spawn(async move |cx| {

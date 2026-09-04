@@ -10,18 +10,28 @@ use std::time::Duration;
 // installs, so the "System" theme looks exactly as before.
 use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
-use gpui_kit::component::input::{Copy, Cut, Editor, EditorState, InputEvent, Paste, RopeExt as _};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{
+    Copy, Cut, Editor, EditorState, InputEvent, Paste, Redo, Replace, RopeExt as _, Search,
+    SelectAll, Undo,
+};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::text::TextViewState;
-use gpui_kit::component::{ActiveTheme as _, Theme, h_resizable, resizable_panel};
+use gpui_kit::component::{
+    ActiveTheme as _, Sizable as _, Theme, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
+    window_border,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
-use crate::keymap::{self, Open, Save, SaveAs};
-use crate::settings::Settings;
+use crate::keymap::{
+    self, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource,
+    ViewSplit,
+};
+use crate::settings::{Settings, ViewMode};
 use crate::theme::{self, PreviewTheme};
 
 /// How long typing has to pause before the preview re-parses.
@@ -74,6 +84,9 @@ pub struct Smep {
     scroll_sync: Option<usize>,
     insert_menu: Option<InsertMenu>,
     settings: Settings,
+    /// Focus for the window when no editor is shown (rendered mode), so the
+    /// shortcuts bound on the root keep working.
+    focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -207,10 +220,14 @@ impl Smep {
             blocks: highlight::block_start_lines(&text),
             scroll_sync: None,
             insert_menu: None,
+            focus_handle: cx.focus_handle(),
             settings,
             _subscriptions: subscriptions,
         };
         this.refresh_title(window);
+        if this.settings.view_mode == ViewMode::Rendered {
+            this.focus_handle.focus(window, cx);
+        }
         this
     }
 
@@ -225,10 +242,194 @@ impl Smep {
             return;
         }
         self.settings.preview_theme = theme;
+        self.save_settings();
+        cx.notify();
+    }
+
+    pub fn view_mode(&self) -> ViewMode {
+        self.settings.view_mode
+    }
+
+    /// Show source, split, or rendered; remembered across runs.
+    pub fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.view_mode != mode {
+            self.settings.view_mode = mode;
+            self.save_settings();
+        }
+        if mode == ViewMode::Rendered {
+            self.focus_handle.focus(window, cx);
+        } else {
+            self.editor.update(cx, |state, cx| state.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    pub fn menu_bar_shown(&self) -> bool {
+        self.settings.menu_bar
+    }
+
+    fn save_settings(&self) {
         if let Err(err) = self.settings.save() {
             eprintln!("smep: could not save settings: {err}");
         }
+    }
+
+    fn view_source(&mut self, _: &ViewSource, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Source, window, cx);
+    }
+
+    fn view_split(&mut self, _: &ViewSplit, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Split, window, cx);
+    }
+
+    fn view_rendered(&mut self, _: &ViewRendered, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Rendered, window, cx);
+    }
+
+    fn toggle_menu_bar(&mut self, _: &ToggleMenuBar, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings.menu_bar = !self.settings.menu_bar;
+        self.save_settings();
         cx.notify();
+    }
+
+    fn toggle_fullscreen(
+        &mut self,
+        _: &ToggleFullscreen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.toggle_fullscreen();
+        cx.notify();
+    }
+
+    /// Quit after the unsaved-changes prompt, if any.
+    fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        let proceed = self.confirm_discard(window, cx);
+        cx.spawn(async move |_, cx| {
+            if proceed.await {
+                cx.update(|cx| cx.quit());
+            }
+        })
+        .detach();
+    }
+
+    /// The File / Edit / View menus for the title bar. Every menu returns
+    /// focus to the editor, so the editing actions land there.
+    fn render_menu_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let editor_focus = self.editor.focus_handle(cx);
+        let mode = self.view_mode();
+        let menu_bar = self.menu_bar_shown();
+        let current_theme = self.preview_theme();
+        let this = cx.weak_entity();
+
+        let button = |id: &'static str, label: &'static str| {
+            Button::new(id)
+                .label(label)
+                .ghost()
+                .xsmall()
+                .tab_stop(false)
+        };
+
+        h_flex()
+            .id("menu-bar")
+            .h_full()
+            .items_center()
+            .gap_0p5()
+            .child(button("menu-file", "File").dropdown_menu({
+                let focus = editor_focus.clone();
+                move |menu, _, _| {
+                    menu.menu("Open…", Box::new(Open))
+                        .menu("Save", Box::new(Save))
+                        .menu("Save As…", Box::new(SaveAs))
+                        .separator()
+                        .menu("Quit", Box::new(Quit))
+                        .action_context(focus.clone())
+                }
+            }))
+            .child(button("menu-edit", "Edit").dropdown_menu({
+                let focus = editor_focus.clone();
+                move |menu, _, _| {
+                    menu.menu("Undo", Box::new(Undo))
+                        .menu("Redo", Box::new(Redo))
+                        .separator()
+                        .menu("Cut", Box::new(Cut))
+                        .menu("Copy", Box::new(Copy))
+                        .menu("Paste", Box::new(Paste))
+                        .menu("Select All", Box::new(SelectAll))
+                        .separator()
+                        .menu("Find", Box::new(Search))
+                        .menu("Replace", Box::new(Replace))
+                        .action_context(focus.clone())
+                }
+            }))
+            .child(button("menu-view", "View").dropdown_menu({
+                let focus = editor_focus;
+                move |mut menu, window, cx| {
+                    for candidate in [ViewMode::Source, ViewMode::Split, ViewMode::Rendered] {
+                        let action: Box<dyn Action> = match candidate {
+                            ViewMode::Source => Box::new(ViewSource),
+                            ViewMode::Split => Box::new(ViewSplit),
+                            ViewMode::Rendered => Box::new(ViewRendered),
+                        };
+                        menu = menu.item(
+                            PopupMenuItem::new(candidate.label())
+                                .checked(candidate == mode)
+                                .action(action),
+                        );
+                    }
+                    let themes = PopupMenu::build(window, cx, |mut submenu, _, _| {
+                        for candidate in theme::ALL {
+                            let this = this.clone();
+                            submenu = submenu.item(
+                                PopupMenuItem::new(candidate.label())
+                                    .checked(candidate == current_theme)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = this.update(cx, |this, cx| {
+                                            this.set_preview_theme(candidate, cx)
+                                        });
+                                    }),
+                            );
+                        }
+                        submenu
+                    });
+                    menu.separator()
+                        .item(PopupMenuItem::submenu("Preview Theme", themes))
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Menu Bar")
+                                .checked(menu_bar)
+                                .action(Box::new(ToggleMenuBar)),
+                        )
+                        .menu("Full Screen", Box::new(ToggleFullscreen))
+                        .action_context(focus.clone())
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// The title bar: menus on the left (when shown), the document in the
+    /// middle, the window controls on the right (added by `TitleBar`).
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let title = format!(
+            "{}{}",
+            if self.is_dirty() { "● " } else { "" },
+            Document::display_name(self.path.as_deref())
+        );
+        let muted = cx.theme().muted_foreground;
+        let menu_bar = self.menu_bar_shown().then(|| self.render_menu_bar(cx));
+        TitleBar::new()
+            .child(
+                h_flex()
+                    .id("chrome")
+                    .flex_1()
+                    .h_full()
+                    .items_center()
+                    .children(menu_bar)
+                    .child(div().flex_1())
+                    .child(div().text_sm().text_color(muted).child(title))
+                    .child(div().flex_1()),
+            )
+            .into_any_element()
     }
 
     /// Re-parse the preview once typing pauses. Each call restarts the wait.
@@ -791,20 +992,36 @@ impl Render for Smep {
 
         let plus = self.render_plus(window, cx);
         let menu = self.render_insert_menu(window, cx);
+        let title_bar = self.render_title_bar(cx);
 
-        div()
-            .size_full()
-            .key_context(keymap::CONTEXT)
-            .on_action(cx.listener(Self::open))
-            .on_action(cx.listener(Self::save))
-            .on_action(cx.listener(Self::save_as))
-            .child(
-                h_resizable("smep-split")
-                    .child(resizable_panel().child(editor.into_any_element()))
-                    .child(resizable_panel().child(preview.into_any_element())),
-            )
-            .children(plus)
-            .children(menu)
+        let content = match self.view_mode() {
+            ViewMode::Source => editor.into_any_element(),
+            ViewMode::Rendered => preview.into_any_element(),
+            ViewMode::Split => h_resizable("smep-split")
+                .child(resizable_panel().child(editor.into_any_element()))
+                .child(resizable_panel().child(preview.into_any_element()))
+                .into_any_element(),
+        };
+
+        window_border().child(
+            v_flex()
+                .size_full()
+                .key_context(keymap::CONTEXT)
+                .track_focus(&self.focus_handle)
+                .on_action(cx.listener(Self::open))
+                .on_action(cx.listener(Self::save))
+                .on_action(cx.listener(Self::save_as))
+                .on_action(cx.listener(Self::quit))
+                .on_action(cx.listener(Self::view_source))
+                .on_action(cx.listener(Self::view_split))
+                .on_action(cx.listener(Self::view_rendered))
+                .on_action(cx.listener(Self::toggle_menu_bar))
+                .on_action(cx.listener(Self::toggle_fullscreen))
+                .child(title_bar)
+                .child(div().flex_1().min_h_0().w_full().child(content))
+                .children(plus)
+                .children(menu),
+        )
     }
 }
 
@@ -823,8 +1040,20 @@ mod tests {
     use crate::insert::{self, BlockKind};
     use crate::io::Document;
     use crate::keymap::{Open, Save};
-    use crate::settings::Settings;
+    use crate::settings::{Settings, ViewMode};
     use crate::theme::PreviewTheme;
+
+    /// `cmd-…` on macOS, `ctrl-…` elsewhere, as in the key bindings.
+    fn primary(keys: &str) -> String {
+        format!(
+            "{}-{keys}",
+            if cfg!(target_os = "macos") {
+                "cmd"
+            } else {
+                "ctrl"
+            }
+        )
+    }
 
     fn open<'a>(
         cx: &'a mut TestAppContext,
@@ -1110,6 +1339,74 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn view_modes_switch_by_keyboard_and_are_remembered(cx: &mut TestAppContext) {
+        let dir = TempDir::new("view-mode");
+        let settings = Settings {
+            path: Some(dir.path("settings.toml")),
+            ..Settings::default()
+        };
+        let document = Document {
+            path: None,
+            text: "# T".into(),
+            format: PreviewFormat::Markdown,
+        };
+        let (smep, cx) = open_with(cx, document, settings);
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+        assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
+
+        cx.simulate_keystrokes(&primary("1"));
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Source);
+        assert!(
+            std::fs::read_to_string(dir.path("settings.toml"))
+                .unwrap()
+                .contains("view_mode = \"source\"")
+        );
+
+        cx.simulate_keystrokes(&primary("3"));
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Rendered);
+
+        // Back to split: keystrokes still reach the root even though the
+        // editor was not rendered in the rendered mode.
+        cx.simulate_keystrokes(&primary("2"));
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
+    }
+
+    #[gpui_kit::test]
+    fn the_menu_bar_and_fullscreen_toggle_by_keyboard(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+        assert!(cx.read(|cx| smep.read(cx).menu_bar_shown()));
+
+        cx.simulate_keystrokes(&primary("shift-m"));
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| smep.read(cx).menu_bar_shown()));
+        cx.simulate_keystrokes(&primary("shift-m"));
+        cx.run_until_parked();
+        assert!(cx.read(|cx| smep.read(cx).menu_bar_shown()));
+
+        let fullscreen = if cfg!(target_os = "macos") {
+            "ctrl-cmd-f"
+        } else {
+            "f11"
+        };
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
+        cx.simulate_keystrokes(fullscreen);
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| window.is_fullscreen()));
+        cx.simulate_keystrokes(fullscreen);
+        cx.run_until_parked();
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
+    }
+
+    #[gpui_kit::test]
     fn opening_a_path_from_the_os_asks_about_unsaved_changes_first(cx: &mut TestAppContext) {
         let dir = TempDir::new("os-open");
         let path = dir.path("incoming.md");
@@ -1369,6 +1666,7 @@ mod tests {
         let settings = Settings {
             preview_theme: PreviewTheme::System,
             path: Some(dir.path("settings.toml")),
+            ..Settings::default()
         };
         let document = Document {
             path: None,
@@ -1396,11 +1694,10 @@ mod tests {
             PreviewTheme::Github
         );
         assert!(!menu_open(&smep, cx));
-        assert_eq!(
+        assert!(
             std::fs::read_to_string(dir.path("settings.toml"))
                 .unwrap()
-                .trim(),
-            r#"preview_theme = "github""#
+                .contains("preview_theme = \"github\"")
         );
     }
 
