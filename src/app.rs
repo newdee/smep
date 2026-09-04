@@ -3,17 +3,26 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+// The preview uses gpui-base's `TextView` directly: the component wrapper
+// folds its own style onto the app theme and offers no colour overrides,
+// while the base one takes a full `TextViewStyle`, which the preview themes
+// need. Without a style it renders with the defaults the component theme
+// installs, so the "System" theme looks exactly as before.
+use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent, RopeExt as _};
+use gpui_kit::component::input::{Copy, Cut, Editor, EditorState, InputEvent, Paste, RopeExt as _};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::text::{TextView, TextViewState};
+use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::{ActiveTheme as _, Theme, h_resizable, resizable_panel};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{self, Open, Save, SaveAs};
+use crate::settings::Settings;
+use crate::theme::{self, PreviewTheme};
 
 /// How long typing has to pause before the preview re-parses.
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(80);
@@ -36,7 +45,7 @@ impl PreviewFormat {
     }
 }
 
-/// The insert menu while it is open, anchored under the cursor's line.
+/// Whichever popup menu is open (insert, editor context, preview theme).
 struct InsertMenu {
     menu: Entity<PopupMenu>,
     position: Point<Pixels>,
@@ -64,6 +73,7 @@ pub struct Smep {
     /// The editor's top line last pushed to the preview.
     scroll_sync: Option<usize>,
     insert_menu: Option<InsertMenu>,
+    settings: Settings,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -111,7 +121,12 @@ fn top_visible_line(state: &EditorState) -> Option<usize> {
 }
 
 impl Smep {
-    pub fn new(document: Document, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        document: Document,
+        settings: Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Theme::sync_system_appearance(Some(window), cx);
 
         let editor = cx.new(|cx| {
@@ -192,10 +207,28 @@ impl Smep {
             blocks: highlight::block_start_lines(&text),
             scroll_sync: None,
             insert_menu: None,
+            settings,
             _subscriptions: subscriptions,
         };
         this.refresh_title(window);
         this
+    }
+
+    pub fn preview_theme(&self) -> PreviewTheme {
+        self.settings.preview_theme
+    }
+
+    /// Switch the preview theme and remember it. A failed write only warns:
+    /// the theme still applies for this session.
+    pub fn set_preview_theme(&mut self, theme: PreviewTheme, cx: &mut Context<Self>) {
+        if self.settings.preview_theme == theme {
+            return;
+        }
+        self.settings.preview_theme = theme;
+        if let Err(err) = self.settings.save() {
+            eprintln!("smep: could not save settings: {err}");
+        }
+        cx.notify();
     }
 
     /// Re-parse the preview once typing pauses. Each call restarts the wait.
@@ -448,6 +481,52 @@ impl Smep {
         state.range_to_bounds(&(line.start..line.start))
     }
 
+    /// Open a popup menu at `position`, replacing any menu already open.
+    /// Actions in it dispatch from the editor, and focus returns there.
+    fn open_menu(
+        &mut self,
+        position: Point<Pixels>,
+        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor_focus = self.editor.focus_handle(cx);
+        let menu = PopupMenu::build(window, cx, |menu, _, _| {
+            build(menu).action_context(editor_focus)
+        });
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.insert_menu = None;
+            cx.notify();
+        });
+        self.insert_menu = Some(InsertMenu {
+            menu,
+            position,
+            _dismiss: dismiss,
+        });
+        cx.notify();
+    }
+
+    /// The block entries, one per snippet, inserting at the editor's cursor.
+    fn insert_items(editor: &Entity<EditorState>, mut menu: PopupMenu) -> PopupMenu {
+        for entry in insert::MENU {
+            menu = match entry {
+                Some(kind) => {
+                    let kind = *kind;
+                    let editor = editor.clone();
+                    menu.item(
+                        PopupMenuItem::new(kind.label()).on_click(move |_, window, cx| {
+                            editor.update(cx, |state, cx| {
+                                insert::insert_block(state, kind, window, cx);
+                            });
+                        }),
+                    )
+                }
+                None => menu.separator(),
+            };
+        }
+        menu
+    }
+
     /// Open the block menu under the cursor's line.
     pub fn open_insert_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.insert_menu.is_some() {
@@ -456,40 +535,106 @@ impl Smep {
         let Some(bounds) = self.cursor_line_bounds(cx) else {
             return;
         };
-
         let editor = self.editor.clone();
-        let editor_focus = editor.focus_handle(cx);
-        let menu = PopupMenu::build(window, cx, |mut menu, _, _| {
-            for entry in insert::MENU {
-                menu = match entry {
-                    Some(kind) => {
-                        let kind = *kind;
-                        let editor = editor.clone();
-                        menu.item(PopupMenuItem::new(kind.label()).on_click(
-                            move |_, window, cx| {
-                                editor.update(cx, |state, cx| {
-                                    insert::insert_block(state, kind, window, cx);
-                                });
-                            },
-                        ))
-                    }
-                    None => menu.separator(),
-                };
-            }
-            menu.action_context(editor_focus)
-        });
+        self.open_menu(
+            bounds.bottom_left(),
+            move |menu| Self::insert_items(&editor, menu),
+            window,
+            cx,
+        );
+    }
 
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.insert_menu = None;
-            cx.notify();
-        });
+    /// The editor's right-click menu: clipboard, then the blocks. The editor
+    /// has already moved the cursor to the click, so blocks land there.
+    pub fn open_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.editor.clone();
+        self.open_menu(
+            position,
+            move |menu| {
+                let menu = menu
+                    .menu("Cut", Box::new(Cut))
+                    .menu("Copy", Box::new(Copy))
+                    .menu("Paste", Box::new(Paste))
+                    .separator();
+                Self::insert_items(&editor, menu)
+            },
+            window,
+            cx,
+        );
+    }
 
-        self.insert_menu = Some(InsertMenu {
-            menu,
-            position: bounds.bottom_left(),
-            _dismiss: dismiss,
+    /// The preview's right-click menu: pick a theme.
+    pub fn open_theme_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.preview_theme();
+        let this = cx.weak_entity();
+        self.open_menu(
+            position,
+            move |mut menu| {
+                for theme in theme::ALL {
+                    let this = this.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(theme.label())
+                            .checked(theme == current)
+                            .on_click(move |_, _, cx| {
+                                let _ =
+                                    this.update(cx, |this, cx| this.set_preview_theme(theme, cx));
+                            }),
+                    );
+                }
+                menu
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// A click in the editor below its last line: the Feishu gesture for
+    /// "add something at the end". The editor handles the click first (it
+    /// moves the cursor); the menu opens on the deferred pass, at the end.
+    fn on_editor_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left || !self.is_below_text(event.position, cx) {
+            return;
+        }
+        let this = cx.entity();
+        window.defer(cx, move |window, cx| {
+            this.update(cx, |this, cx| {
+                this.editor.update(cx, |state, cx| {
+                    let end = state.text().len();
+                    state.set_selected_range(end..end, cx);
+                });
+                this.open_insert_menu(window, cx);
+            });
         });
-        cx.notify();
+    }
+
+    /// Whether `position` is inside the editor but under its last line.
+    /// The last line answers `None` while it is scrolled out of view, and
+    /// then nothing is "below the text".
+    fn is_below_text(&self, position: Point<Pixels>, cx: &App) -> bool {
+        let state = self.editor.read(cx);
+        if !state.input_bounds().contains(&position) {
+            return false;
+        }
+        let len = state.text().len();
+        match state.range_to_bounds(&(len..len)) {
+            Some(last) => position.y > last.bottom(),
+            None => false,
+        }
     }
 
     /// The "+" beside an empty line while the editor has focus.
@@ -574,14 +719,59 @@ impl Render for Smep {
                 let _ = this.update(cx, |this, cx| this.sync_preview_scroll(cx));
             }
         };
+        let palette = self.preview_theme().palette();
+        let background = palette.map_or(cx.theme().background, |p| p.background);
+        let foreground = palette.map_or(cx.theme().foreground, |p| p.foreground);
         let preview = div()
+            .id("preview")
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(background)
+            .text_color(foreground)
+            .when_some(palette.and_then(|p| p.font_family()), |this, family| {
+                this.font_family(family)
+            })
             .px_6()
             .py_4()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.open_theme_menu(event.position, window, cx);
+                }),
+            )
             .on_prepaint(follow_editor)
-            .child(TextView::new(&self.preview).scrollable(true));
+            .child(
+                TextView::new(&self.preview)
+                    .scrollable(true)
+                    .when_some(palette, |view, p| view.style(p.text_view_style())),
+            );
+
+        // Right-click: the editor moves the cursor to the click, then hands
+        // over here while it is still borrowed, so the menu opens one step
+        // later. An empty native menu is returned, so none shows.
+        let context_menu = {
+            let this = cx.weak_entity();
+            move |menu, window: &mut Window, cx: &mut App| {
+                let position = window.mouse_position();
+                let this = this.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ =
+                        this.update(cx, |this, cx| this.open_context_menu(position, window, cx));
+                });
+                menu
+            }
+        };
+        let editor = div()
+            .id("editor")
+            .size_full()
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_editor_mouse_down))
+            .child(
+                Editor::new(&self.editor)
+                    .bordered(false)
+                    .size_full()
+                    .pl(px(28.))
+                    .context_menu(context_menu),
+            );
 
         let plus = self.render_plus(window, cx);
         let menu = self.render_insert_menu(window, cx);
@@ -594,15 +784,7 @@ impl Render for Smep {
             .on_action(cx.listener(Self::save_as))
             .child(
                 h_resizable("smep-split")
-                    .child(
-                        resizable_panel().child(
-                            Editor::new(&self.editor)
-                                .bordered(false)
-                                .size_full()
-                                .pl(px(28.))
-                                .into_any_element(),
-                        ),
-                    )
+                    .child(resizable_panel().child(editor.into_any_element()))
                     .child(resizable_panel().child(preview.into_any_element())),
             )
             .children(plus)
@@ -617,12 +799,16 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use gpui_kit::component::input::{EditorState, Position};
-    use gpui_kit::{Entity, TestAppContext, VisualTestContext};
+    use gpui_kit::{
+        Entity, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point, px,
+    };
 
     use super::{PREVIEW_DEBOUNCE, PreviewFormat, Smep};
     use crate::insert::{self, BlockKind};
     use crate::io::Document;
     use crate::keymap::{Open, Save};
+    use crate::settings::Settings;
+    use crate::theme::PreviewTheme;
 
     fn open<'a>(
         cx: &'a mut TestAppContext,
@@ -642,11 +828,30 @@ mod tests {
         cx: &mut TestAppContext,
         document: Document,
     ) -> (Entity<Smep>, &mut VisualTestContext) {
+        open_with(cx, document, Settings::default())
+    }
+
+    fn open_with(
+        cx: &mut TestAppContext,
+        document: Document,
+        settings: Settings,
+    ) -> (Entity<Smep>, &mut VisualTestContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::keymap::init(cx);
         });
-        cx.add_window_view(|window, cx| Smep::new(document, window, cx))
+        cx.add_window_view(|window, cx| Smep::new(document, settings, window, cx))
+    }
+
+    fn mouse_down(cx: &mut VisualTestContext, button: MouseButton, x: f32, y: f32) {
+        cx.simulate_event(MouseDownEvent {
+            button,
+            position: point(px(x), px(y)),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
     }
 
     fn editor(smep: &Entity<Smep>, cx: &VisualTestContext) -> Entity<EditorState> {
@@ -1003,6 +1208,154 @@ mod tests {
             "intro\n# \nend",
             "the preview sees the inserted block"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_click_below_the_text_opens_the_menu_at_the_end(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "one\ntwo");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_cursor_position(Position::new(0, 0), window, cx);
+            });
+        });
+        draw(cx);
+        let (input, last) = cx.read(|cx| {
+            let state = editor.read(cx);
+            let len = state.text().len();
+            (
+                state.input_bounds(),
+                state
+                    .range_to_bounds(&(len..len))
+                    .expect("the last line is on screen"),
+            )
+        });
+        assert!(
+            input.bottom() > last.bottom() + px(40.),
+            "room below the text"
+        );
+
+        // On the text: the editor's own click, no menu.
+        mouse_down(
+            cx,
+            MouseButton::Left,
+            f32::from(last.left()) + 4.,
+            f32::from(last.top()) + 4.,
+        );
+        assert!(!menu_open(&smep, cx));
+
+        // Well below it: cursor to the end, menu open.
+        mouse_down(
+            cx,
+            MouseButton::Left,
+            f32::from(last.left()) + 4.,
+            f32::from(input.bottom()) - 10.,
+        );
+        assert!(
+            menu_open(&smep, cx),
+            "a click below the text opens the menu"
+        );
+        assert_eq!(cx.read(|cx| editor.read(cx).cursor()), "one\ntwo".len());
+    }
+
+    #[gpui_kit::test]
+    fn right_click_in_the_editor_opens_the_context_menu(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "one\ntwo");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+        let first = cx.read(|cx| editor.read(cx).range_to_bounds(&(0..0)).unwrap());
+
+        // Down then up: the editor opens its context menu on release.
+        let (x, y) = (f32::from(first.left()) + 4., f32::from(first.top()) + 4.);
+        mouse_down(cx, MouseButton::Right, x, y);
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            button: MouseButton::Right,
+            position: point(px(x), px(y)),
+            modifiers: Default::default(),
+            click_count: 1,
+        });
+        cx.run_until_parked();
+        draw(cx);
+        cx.run_until_parked();
+
+        assert!(menu_open(&smep, cx), "right-click opens smep's menu");
+        assert!(!cx.read(|cx| {
+            smep.read(cx)
+                .insert_menu
+                .as_ref()
+                .unwrap()
+                .menu
+                .read(cx)
+                .is_empty()
+        }));
+    }
+
+    #[gpui_kit::test]
+    fn right_click_on_the_preview_picks_a_theme_and_saves_it(cx: &mut TestAppContext) {
+        let dir = TempDir::new("theme");
+        let settings = Settings {
+            preview_theme: PreviewTheme::System,
+            path: Some(dir.path("settings.toml")),
+        };
+        let document = Document {
+            path: None,
+            text: "# T".into(),
+            format: PreviewFormat::Markdown,
+        };
+        let (smep, cx) = open_with(cx, document, settings);
+        draw(cx);
+        let editor = editor(&smep, cx);
+        let preview_x = f32::from(cx.read(|cx| editor.read(cx).input_bounds().right())) + 60.;
+
+        mouse_down(cx, MouseButton::Right, preview_x, 200.);
+        assert!(
+            menu_open(&smep, cx),
+            "right-click on the preview opens the theme menu"
+        );
+        draw(cx);
+
+        // First `down` selects System (the current one), the second GitHub.
+        cx.simulate_keystrokes("down down enter");
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).preview_theme()),
+            PreviewTheme::Github
+        );
+        assert!(!menu_open(&smep, cx));
+        assert_eq!(
+            std::fs::read_to_string(dir.path("settings.toml"))
+                .unwrap()
+                .trim(),
+            r#"preview_theme = "github""#
+        );
+    }
+
+    #[gpui_kit::test]
+    fn inserting_on_a_line_with_text_adds_a_line_below(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "text\nnext");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_cursor_position(Position::new(0, 2), window, cx);
+                insert::insert_block(state, BlockKind::Heading1, window, cx);
+            });
+        });
+        assert_eq!(value(&editor, cx), "text\n# \nnext");
+        assert_eq!(cx.read(|cx| editor.read(cx).cursor()), "text\n# ".len());
+
+        let (smep, cx) = open(cx, "a\r\nb");
+        let crlf_editor = cx.read(|cx| smep.read(cx).editor.clone());
+        cx.update(|window, cx| {
+            crlf_editor.update(cx, |state, cx| {
+                state.set_cursor_position(Position::new(0, 1), window, cx);
+                insert::insert_block(state, BlockKind::Quote, window, cx);
+            });
+        });
+        assert_eq!(value(&crlf_editor, cx), "a\r\n> \r\nb");
+        assert_eq!(cx.read(|cx| crlf_editor.read(cx).cursor()), "a\r\n> ".len());
     }
 
     #[gpui_kit::test]

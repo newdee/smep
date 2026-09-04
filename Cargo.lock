@@ -6445,8 +6445,11 @@ name = "smep"
 version = "0.1.0-dev"
 dependencies = [
  "anyhow",
+ "dirs 6.0.0",
  "gpui-kit",
  "markdown",
+ "serde",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

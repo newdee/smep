@@ -16,8 +16,12 @@ release `0.0.1` is a placeholder that only prints its version.
 ## What it does
 
 - Editor and rendered preview side by side, resizable, updated as you type.
-- Type `/` on an empty line, or click the `+` beside it, for a menu of blocks:
-  headings, lists, task list, quote, code block, table, divider, image, link.
+- A menu of blocks (headings, lists, task list, quote, code block, table,
+  divider, image, link) wherever you ask for it: type `/` on an empty line,
+  click the `+` beside one, click below the end of the text, or right-click.
+- Seven preview themes (System, GitHub, Newsprint, Night, Sepia, Solarized
+  Light/Dark): right-click the preview. The choice is remembered in
+  `settings.toml` under the platform config directory.
 - Markdown highlighting in the editor from the same parser the preview uses.
 - The preview follows the editor: whatever block is at the top of the editor
   is at the top of the preview.
@@ -36,6 +40,8 @@ release `0.0.1` is a placeholder that only prints its version.
 | Save | Ctrl+S | Cmd+S |
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
 | Insert block (on an empty line) | `/` | `/` |
+| Block menu / clipboard | right-click the editor | right-click the editor |
+| Preview theme | right-click the preview | right-click the preview |
 | Find in editor | Ctrl+F | Cmd+F |
 | Find and replace | Ctrl+H | Cmd+Shift+F |
 | Document start / end | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |

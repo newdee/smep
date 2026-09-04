@@ -100,7 +100,11 @@ pub fn cursor_line_trimmed(state: &EditorState) -> String {
     state.text().slice(range).to_string().trim().to_string()
 }
 
-/// Replace the cursor's line with the block's skeleton and place the cursor.
+/// Put the block's skeleton at the cursor's line and place the cursor.
+///
+/// A blank line (or the `/` that opened the menu) is replaced. A line with
+/// content keeps it: the skeleton goes on a new line below, with the
+/// document's own line ending.
 pub fn insert_block(
     state: &mut EditorState,
     kind: BlockKind,
@@ -109,10 +113,24 @@ pub fn insert_block(
 ) {
     let line = cursor_line_range(state);
     let (snippet, cursor) = kind.snippet();
-    let cursor = line.start + cursor;
+    let trimmed = cursor_line_trimmed(state);
 
-    state.set_selected_range(line, cx);
-    state.replace(snippet, window, cx);
+    let (target, text, cursor) = if trimmed.is_empty() || trimmed == "/" {
+        let cursor = line.start + cursor;
+        (line, snippet.to_string(), cursor)
+    } else {
+        let newline = if state.text().char_at(line.end) == Some('\r') {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let text = format!("{newline}{snippet}");
+        let cursor = line.end + newline.len() + cursor;
+        (line.end..line.end, text, cursor)
+    };
+
+    state.set_selected_range(target, cx);
+    state.replace(text, window, cx);
     state.set_selected_range(cursor..cursor, cx);
 }
 

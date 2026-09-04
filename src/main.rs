@@ -7,6 +7,8 @@ mod highlight;
 mod insert;
 mod io;
 mod keymap;
+mod settings;
+mod theme;
 
 use std::path::PathBuf;
 
@@ -15,8 +17,10 @@ use gpui_kit::component::Root;
 use gpui_kit::*;
 
 use io::Document;
+use settings::Settings;
 
 fn main() {
+    let settings = Settings::load();
     let document = match std::env::args_os().nth(1).map(PathBuf::from) {
         Some(path) => match Document::read(path.clone()) {
             Ok(document) => document,
@@ -43,7 +47,7 @@ fn main() {
 
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| app::Smep::new(document, window, cx));
+                let view = cx.new(|cx| app::Smep::new(document, settings, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open the smep window");
