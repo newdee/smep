@@ -3,8 +3,11 @@
 //! Usage: `smep [FILE]`. With no argument the editor starts empty.
 
 mod app;
+mod insert;
 
 use std::path::PathBuf;
+
+use app::PreviewFormat;
 
 use gpui_kit::assets::Assets;
 use gpui_kit::component::Root;
@@ -22,6 +25,10 @@ fn main() {
         },
         None => ("smep".to_string(), String::new()),
     };
+    let format = path
+        .as_deref()
+        .map(PreviewFormat::for_path)
+        .unwrap_or(PreviewFormat::Markdown);
 
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
@@ -37,7 +44,7 @@ fn main() {
 
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| app::Smep::new(text, window, cx));
+                let view = cx.new(|cx| app::Smep::new(text, format, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("failed to open the smep window");
