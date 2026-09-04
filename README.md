@@ -12,8 +12,10 @@ place, block by block.
 
 ## Status
 
-`0.1.0` is the first usable release. Expect rough edges; the editor and
-preview are built on gpui-kit and gpui-pre, which are themselves young.
+`0.1.1` is the second release: it adds the frameless window with its view
+modes, in-place editing in the rendered view, and opening files from the OS.
+Expect rough edges; the editor and preview are built on gpui-kit and
+gpui-pre, which are themselves young.
 
 ## What it does
 
