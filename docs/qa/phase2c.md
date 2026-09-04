@@ -42,9 +42,37 @@ Round 2 result: 0 findings.
 - `Ctrl+End` did nothing in the Windows smoke. The editor binds only `home` / `end` (line) and the macOS `cmd-up` / `cmd-down`; there is no document start/end on Windows or Linux. **Finding.** smep now binds `ctrl-home` / `ctrl-end` / `ctrl-shift-home` / `ctrl-shift-end` to the editor's `MoveToStart` / `MoveToEnd` / `SelectToStart` / `SelectToEnd` (non-macOS), with a headless test `ctrl_end_and_ctrl_home_jump_across_the_document`. Smoke rerun: `^{END}` lands the editor on "Section 60" and the preview follows to "Section 60".
 - Count resets. Windows checks on the fixed tree: fmt 0, clippy 0, `31 passed`.
 
-## Round 4 — platforms (CI)
+## Round 4 — platforms (CI) (clean streak 1)
 
-Pending: run for the pushed commit.
+Two runs, both green on all three OS with warm caches:
+
+| Commit | Run | ubuntu | windows | macos |
+|---|---|---|---|---|
+| `58522e8` highlighting + sync | 33834366346 | 1 m 24 s | 2 m 18 s | 1 m 49 s |
+| `6039f3e` Ctrl+Home/End | 33834535312 | 1 m 25 s | 3 m 47 s | 1 m 37 s |
+
+The 31 tests (30 on macOS, where the Ctrl+Home/End test is compiled out) pass everywhere.
+
+Round 4 result: 0 findings.
+
+## Round 5 — static consistency (README vs code, package contents) (clean streak 2)
+
+- Every key in the README table checked against the bindings: Ctrl/Cmd+O/S/Shift+S (`keymap.rs`), Ctrl+F / Cmd+F and Ctrl+H / Cmd+Shift+F (gpui-base `state.rs:262-268`), Cmd+Up/Down on macOS (`state.rs:238-240`), Ctrl+Home/End (`keymap.rs`, non-macOS).
+- README feature list: each line maps to a test or a smoke in these logs; "one static binary" holds on all three CI targets.
+- `cargo publish --dry-run --locked`: 13 files, 292.6 KiB (76.9 KiB compressed), verification build passes. No `docs/`, `.github/`, `.env`.
+
+Round 5 result: 0 findings.
+
+## Round 6 — repeatability (clean streak 3)
+
+- `cargo test --locked` × 3 on the final tree: `31 passed` each time.
+- The scroll-sync test asserts an exact item (`top_line / 2`) rather than a range, and passed on every run above.
+
+Round 6 result: 0 findings.
+
+## Verdict
+
+Three consecutive clean rounds (4, 5, 6) after the Ctrl+Home/End fix. Phase 2c accepted. The WSLg check remains open for the whole of Phase 1–2.
 
 ## Open items carried forward
 
