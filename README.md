@@ -1,29 +1,54 @@
 # smep — a Simple Markdown Editor & Previewer, written in Rust
 
 [![crates.io](https://img.shields.io/crates/v/smep.svg)](https://crates.io/crates/smep)
+[![CI](https://github.com/newdee/smep/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/smep/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 **smep** is a markdown editor with live preview, built in pure Rust on the
 [GPUI](https://www.gpui.rs) framework (the UI toolkit behind the Zed editor).
+Two panes, no toolbar: write on the left, read on the right.
 
 ## Status
 
-`0.0.1` is a name-reservation release. It ships a single binary that prints
-its version and exits. No editing or preview functionality exists yet.
+`0.1.0` is on its way; `main` already does everything below. The crates.io
+release `0.0.1` is a placeholder that only prints its version.
 
-## Goals
+## What it does
 
-- Pure Rust, no web view, no Electron.
-- GPU-accelerated UI via GPUI.
-- Side-by-side editor and rendered preview, updated as you type.
-- CommonMark + GFM (tables, task lists, strikethrough, footnotes).
-- Fast startup, low memory, single static binary.
+- Editor and rendered preview side by side, resizable, updated as you type.
+- Type `/` on an empty line, or click the `+` beside it, for a menu of blocks:
+  headings, lists, task list, quote, code block, table, divider, image, link.
+- Markdown highlighting in the editor from the same parser the preview uses.
+- The preview follows the editor: whatever block is at the top of the editor
+  is at the top of the preview.
+- CommonMark + GFM: tables, task lists, strikethrough, footnotes. Raw HTML
+  inside Markdown renders too, and `.html` files open straight into the
+  HTML preview.
+- Open, save, save as; an unsaved-changes prompt before closing.
+- Light and dark, following the system.
+- One static binary, no web view, no Electron.
+
+## Keys
+
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Open | Ctrl+O | Cmd+O |
+| Save | Ctrl+S | Cmd+S |
+| Save as | Ctrl+Shift+S | Cmd+Shift+S |
+| Insert block (on an empty line) | `/` | `/` |
+| Find in editor | Ctrl+F | Cmd+F |
+| Find and replace | Ctrl+H | Cmd+Shift+F |
+| Document start / end | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |
 
 ## Install
 
 ```sh
 cargo install smep
+smep notes.md
 ```
+
+Building from source needs a Rust toolchain and, on Linux, a few system
+libraries; see [docs/dev.md](docs/dev.md).
 
 ## License
 

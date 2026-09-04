@@ -37,11 +37,15 @@ Round 1 result: 0 findings.
 
 Round 2 result: 0 findings.
 
-## Round 3 — platforms (CI)
+## Round 3 — platforms (CI), plus one finding from round 1 revisited
+
+- `Ctrl+End` did nothing in the Windows smoke. The editor binds only `home` / `end` (line) and the macOS `cmd-up` / `cmd-down`; there is no document start/end on Windows or Linux. **Finding.** smep now binds `ctrl-home` / `ctrl-end` / `ctrl-shift-home` / `ctrl-shift-end` to the editor's `MoveToStart` / `MoveToEnd` / `SelectToStart` / `SelectToEnd` (non-macOS), with a headless test `ctrl_end_and_ctrl_home_jump_across_the_document`. Smoke rerun: `^{END}` lands the editor on "Section 60" and the preview follows to "Section 60".
+- Count resets. Windows checks on the fixed tree: fmt 0, clippy 0, `31 passed`.
+
+## Round 4 — platforms (CI)
 
 Pending: run for the pushed commit.
 
 ## Open items carried forward
 
-- `Ctrl+End` did not move the cursor in the Windows smoke (`^{END}` via SendKeys); page down does. Check the editor's default bindings before deciding whether smep should bind it.
 - Incremental highlighting; one shared parse.

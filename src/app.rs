@@ -912,6 +912,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "typed");
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[gpui_kit::test]
+    fn ctrl_end_and_ctrl_home_jump_across_the_document(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "first\nsecond\nthird");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+
+        cx.simulate_keystrokes("ctrl-end");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| editor.read(cx).cursor()),
+            "first\nsecond\nthird".len()
+        );
+
+        cx.simulate_keystrokes("ctrl-home");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| editor.read(cx).cursor()), 0);
+
+        cx.simulate_keystrokes("ctrl-shift-end");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| editor.read(cx).selected_range()),
+            0.."first\nsecond\nthird".len()
+        );
+    }
+
     #[gpui_kit::test]
     fn a_slash_on_an_empty_line_opens_the_menu_and_escape_closes_it(cx: &mut TestAppContext) {
         let (smep, cx) = open(cx, "");
