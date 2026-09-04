@@ -179,12 +179,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Draft the GitHub release
+      - name: Draft the GitHub release (or replace the files of an existing one)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$VERSION" dist/* \
-            --repo "${{ github.repository }}" \
-            --title "smep $VERSION" \
-            --draft \
-            --generate-notes
+          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$VERSION" dist/* \
+              --repo "${{ github.repository }}" \
+              --title "smep $VERSION" \
+              --draft \
+              --generate-notes
+          fi
