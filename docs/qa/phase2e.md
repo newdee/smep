@@ -27,4 +27,6 @@ Round 1 result: 0 findings on what could be run here.
 
 ## Round 2 — platforms (CI)
 
-Pending: run for the pushed commit.
+CI run 33846455745 for `33509b7`, all three jobs green: ubuntu 2 m 33 s, windows 6 m 03 s, macos 2 m 41 s. The 45 tests pass everywhere; the macOS job also compiles the `on_open_urls` path, which the other two never link.
+
+Round 2 result: 0 findings.
