@@ -94,6 +94,17 @@ once more. `scripts/set-apple-secrets.sh path/to/DeveloperID.p12` (or the
 `.ps1` twin on Windows) asks for each value with hidden input and stores all
 six; nothing is echoed or written to disk.
 
+## Import and export
+
+`src/convert.rs` turns PDF (`pdf-inspector`), Word (`docx-rust`), HTML
+(`htmd`) and text into Markdown; `src/export.rs` turns Markdown into Typst
+markup and compiles it (`typst-as-lib`, `typst-pdf`) with the fonts
+installed on the machine (no fonts are embedded: they would add ~20 MB,
+and every desktop has some; CJK needs a CJK font present). The export
+test reads the text back out of the PDF it made. On Linux, CI installs
+`fonts-dejavu-core fonts-noto-cjk` for that; a bare box without any font
+cannot export.
+
 ## Checks before pushing
 
 ```sh

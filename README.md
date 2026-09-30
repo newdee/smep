@@ -45,6 +45,9 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   on the command line. The result is a new, unsaved document named after
   the original. PDFs need a text layer; smep does no OCR. Images in Word
   files are not carried over.
+- Export as PDF (typeset by [Typst](https://typst.app), built in: headings,
+  lists, tables, code, quotes, footnotes, local images; CJK text uses the
+  system's fonts) or as a standalone HTML page, under File.
 - Light and dark, following the system.
 - One static binary, no web view, no Electron.
 
@@ -56,6 +59,7 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Import as Markdown | Ctrl+Shift+O | Cmd+Shift+O |
 | Save | Ctrl+S | Cmd+S |
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
+| Export as PDF | Ctrl+Shift+E | Cmd+Shift+E |
 | Source / Split / Rendered view | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |
 | Show or hide the menu bar | Ctrl+Shift+M | Cmd+Shift+M |
 | Full screen | F11 | Ctrl+Cmd+F |
@@ -89,7 +93,10 @@ tarball there.) `smep --version` and `smep --help` print and exit without
 opening a window.
 
 Building from source needs a Rust toolchain and, on Linux, a few system
-libraries; see [docs/dev.md](docs/dev.md).
+libraries; see [docs/dev.md](docs/dev.md). PDF import and PDF export are
+the two heavy parts of the binary (about 11 MB and 30 MB); a build without
+them, `cargo install smep --no-default-features`, keeps everything else
+and reports the missing feature if asked for it.
 
 ## Make it the default for `.md`
 

@@ -82,10 +82,16 @@ fn html(bytes: &[u8]) -> Result<String> {
     Ok(normalize(&markdown))
 }
 
+#[cfg(not(feature = "pdf-import"))]
+fn pdf(_bytes: &[u8]) -> Result<String> {
+    bail!("this build of smep was made without PDF import (the `pdf-import` feature)");
+}
+
 /// The PDF's text layer, page by page, in pdf-inspector's Markdown
 /// (headings, lists and tables where it finds them). Pages without a
 /// usable text layer (scans) are marked rather than silently dropped; a
 /// document with none at all is an error, since there is nothing to edit.
+#[cfg(feature = "pdf-import")]
 fn pdf(bytes: &[u8]) -> Result<String> {
     let extraction = pdf_inspector::extract_pages_markdown_mem(bytes, None)
         .map_err(|err| anyhow!("not a readable PDF: {err}"))?;
@@ -453,6 +459,7 @@ mod tests {
     }
 
     /// A minimal one-page PDF with a text layer, written by hand.
+    #[cfg(feature = "pdf-import")]
     fn tiny_pdf(text: &str) -> Vec<u8> {
         let content = format!("BT /F1 24 Tf 72 720 Td ({text}) Tj ET");
         let objects = [
@@ -481,6 +488,7 @@ mod tests {
         out.into_bytes()
     }
 
+    #[cfg(feature = "pdf-import")]
     #[test]
     fn a_pdf_text_layer_comes_out_as_markdown() {
         let md = from_bytes(&tiny_pdf("Hello from smep"), Format::Pdf).unwrap();
@@ -488,6 +496,7 @@ mod tests {
         assert!(md.ends_with('\n'));
     }
 
+    #[cfg(feature = "pdf-import")]
     #[test]
     fn a_pdf_without_text_is_an_error_and_garbage_is_not_a_pdf() {
         let err = from_bytes(&tiny_pdf(""), Format::Pdf).unwrap_err();

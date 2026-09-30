@@ -12,6 +12,16 @@ keywords = ["markdown", "editor", "preview", "gui", "gpui"]
 categories = ["text-editors"]
 include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
+[features]
+default = ["pdf-import", "pdf-export"]
+# PDF → Markdown (pdf-inspector, ~11 MB of binary, most of it the CJK
+# character maps that Chinese PDFs need).
+pdf-import = ["dep:pdf-inspector"]
+# Markdown → PDF: Typst typesets the document with the system's fonts
+# (Typst's own embedded fonts would add ~20 MB for Latin text alone, and
+# every platform ships fonts). ~30 MB of binary.
+pdf-export = ["dep:typst-as-lib", "dep:typst-layout", "dep:typst-pdf"]
+
 [dependencies]
 anyhow = "1"
 dirs = "6"
@@ -20,13 +30,20 @@ futures = "0.3"
 gpui-kit = "0.6"
 htmd = "0.5"
 markdown = "1"
-pdf-inspector = "1.25"
+pdf-inspector = { version = "1.25", optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+typst-as-lib = { version = "0.16", features = ["typst-kit-fonts"], optional = true }
+typst-layout = { version = "0.15", optional = true }
+typst-pdf = { version = "0.15", optional = true }
 
 [dev-dependencies]
 gpui-kit = { version = "0.6", features = ["test-support"] }
 
 [profile.release]
-# One small static binary is a project goal; symbols alone were 30 MB on Linux.
+# One small static binary is a project goal; symbols alone were 30 MB on
+# Linux, and link-time optimisation takes a further fifth off with Typst
+# in (fat LTO saves a little more but triples the build time).
 strip = true
+lto = "thin"
+codegen-units = 1

@@ -30,10 +30,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # The last two are fonts: the PDF export test typesets with the
+          # system's fonts, as a Linux desktop would have them.
           sudo apt-get install -y --no-install-recommends \
             clang cmake lld \
             libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libvulkan1
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libvulkan1 \
+            fonts-dejavu-core fonts-noto-cjk
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -26,12 +26,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::convert;
+use crate::export;
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
-    self, Import, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar, ViewRendered,
-    ViewSource, ViewSplit,
+    self, ExportHtml, ExportPdf, Import, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar,
+    ViewRendered, ViewSource, ViewSplit,
 };
 use crate::rendered::{RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
@@ -446,6 +447,9 @@ impl Smep {
                         .menu("Import as Markdown…", Box::new(Import))
                         .menu("Save", Box::new(Save))
                         .menu("Save As…", Box::new(SaveAs))
+                        .separator()
+                        .menu("Export as PDF…", Box::new(ExportPdf))
+                        .menu("Export as HTML…", Box::new(ExportHtml))
                         .separator()
                         .menu("Quit", Box::new(Quit))
                         .action_context(focus.clone())
@@ -900,6 +904,94 @@ impl Smep {
         .detach();
     }
 
+    /// Ask where to put an export of the document with `extension`: next to
+    /// it, named after it. Resolves to the chosen path.
+    fn ask_export_path(&self, extension: &str, cx: &mut Context<Self>) -> Task<Option<PathBuf>> {
+        let named = self.named_path();
+        let directory = named
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let stem = named
+            .as_deref()
+            .and_then(Path::file_stem)
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".to_string());
+        let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{stem}.{extension}")));
+        cx.background_spawn(async move {
+            match chosen.await {
+                Ok(Ok(Some(path))) => Some(path),
+                _ => None,
+            }
+        })
+    }
+
+    /// Typeset the document as a PDF (off the UI thread; Typst takes a
+    /// moment) and write it where the user asks.
+    fn export_pdf(&mut self, _: &ExportPdf, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = self.ask_export_path("pdf", cx);
+        let text = self.editor.read(cx).value();
+        let base = self
+            .named_path()
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf);
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = chosen.await else {
+                return;
+            };
+            let written = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move {
+                        let pdf = export::to_pdf(&text, base.as_deref())?;
+                        std::fs::write(&path, pdf)?;
+                        anyhow::Ok(())
+                    }
+                })
+                .await;
+            if let Err(err) = written {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.report(
+                        &format!("Could not export {}", path.display()),
+                        &format!("{err:#}"),
+                        window,
+                        cx,
+                    )
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The document as a standalone HTML page, written where the user asks.
+    fn export_html(&mut self, _: &ExportHtml, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = self.ask_export_path("html", cx);
+        let text = self.editor.read(cx).value();
+        let title = export::first_heading(&text)
+            .unwrap_or_else(|| Document::display_name(self.named_path().as_deref()));
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = chosen.await else {
+                return;
+            };
+            if let Err(err) = std::fs::write(&path, export::to_html(&text, &title)) {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.report(
+                        &format!("Could not export {}", path.display()),
+                        &err.to_string(),
+                        window,
+                        cx,
+                    )
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Files dropped on the window: the first one opens (or, for a PDF,
     /// Word or text file, is converted), after the unsaved-changes prompt.
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
@@ -1267,6 +1359,8 @@ impl Render for Smep {
                 .on_drop(cx.listener(Self::on_drop))
                 .on_action(cx.listener(Self::open))
                 .on_action(cx.listener(Self::import))
+                .on_action(cx.listener(Self::export_pdf))
+                .on_action(cx.listener(Self::export_html))
                 .on_action(cx.listener(Self::save))
                 .on_action(cx.listener(Self::save_as))
                 .on_action(cx.listener(Self::quit))
@@ -1895,6 +1989,51 @@ mod tests {
         cx.simulate_prompt_answer("OK");
         assert_eq!(value(&editor, cx), "kept");
         assert!(!dirty(&smep, cx));
+    }
+
+    #[cfg(all(feature = "pdf-export", feature = "pdf-import"))]
+    #[gpui_kit::test]
+    fn exporting_writes_a_pdf_and_an_html_page_next_to_the_document(cx: &mut TestAppContext) {
+        use crate::keymap::ExportHtml;
+
+        let dir = TempDir::new("export");
+        let path = dir.path("report.md");
+        std::fs::write(&path, "# Report\n\nBody *text*.\n").unwrap();
+        let (smep, cx) = open_document(cx, Document::read(path.clone()).unwrap());
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+
+        // The dialog opens next to the document, suggesting report.pdf.
+        cx.simulate_keystrokes(&primary("shift-e"));
+        let pdf_path = dir.path("out.pdf");
+        cx.simulate_new_path_selection({
+            let pdf_path = pdf_path.clone();
+            let expected_dir = dir.0.clone();
+            move |directory| {
+                assert_eq!(directory, expected_dir);
+                Some(pdf_path)
+            }
+        });
+        cx.run_until_parked();
+        let pdf = std::fs::read(&pdf_path).expect("the PDF was written");
+        assert!(pdf.starts_with(b"%PDF-"));
+        let text = crate::convert::from_bytes(&pdf, crate::convert::Format::Pdf).unwrap();
+        assert!(text.contains("Report") && text.contains("Body"), "{text:?}");
+
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.export_html(&ExportHtml, window, cx))
+        });
+        let html_path = dir.path("out.html");
+        cx.simulate_new_path_selection({
+            let html_path = html_path.clone();
+            move |_| Some(html_path)
+        });
+        cx.run_until_parked();
+        let html = std::fs::read_to_string(&html_path).expect("the HTML was written");
+        assert!(html.contains("<title>Report</title>"));
+        assert!(html.contains("<em>text</em>"));
+        assert!(!dirty(&smep, cx), "exporting is not saving");
     }
 
     #[gpui_kit::test]
