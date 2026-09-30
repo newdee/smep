@@ -67,10 +67,12 @@ Run it by hand for an existing tag with
 `gh workflow run release.yml -f tag=vX.Y.Z`.
 
 The Homebrew formula in [newdee/homebrew-tap](https://github.com/newdee/homebrew-tap)
-(`Formula/smep.rb`) follows the latest published release on its own: a
-scheduled workflow there downloads the new archives, installs and tests
-them on macOS and Linux runners, and commits the bump only if both pass.
-To take a release at once instead of within six hours:
+(`Formula/smep.rb`, macOS only) follows the latest published release on
+its own: a scheduled workflow there downloads
+`smep-vX.Y.Z-macos-universal.tar.gz` (the bare universal binary the
+release also ships next to the `.app` zip), installs and tests it on a
+macOS runner, and commits the bump only if that passes. To take a release
+at once instead of within six hours:
 `gh workflow run smep.yml --repo newdee/homebrew-tap`. The formula's test
 runs `smep --version`, which must print `smep X.Y.Z`.
 

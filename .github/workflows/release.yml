@@ -164,9 +164,12 @@ jobs:
           spctl --assess --type execute --verbose=2 "$APP"
 
       - name: Package
+        # The app bundle for Finder, and the bare universal binary for the
+        # Homebrew formula (a formula installs a program, not a bundle).
         run: |
           mkdir -p dist
           ditto -c -k --keepParent "$APP" "dist/smep-$VERSION-macos-universal.zip"
+          tar -C "$APP/Contents/MacOS" -czf "dist/smep-$VERSION-macos-universal.tar.gz" smep
       - uses: actions/upload-artifact@v4
         with:
           name: macos

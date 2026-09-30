@@ -69,27 +69,29 @@ cargo install smep
 smep notes.md
 ```
 
-On a Mac or on Linux, Homebrew works too:
+On a Mac, Homebrew works too:
 
 ```sh
 brew install newdee/tap/smep
 ```
 
-The formula installs the release's own build (a universal app on macOS,
-run from the `smep` command) and follows new releases by itself.
-`smep --version` and `smep --help` print and exit without opening a window.
+The formula installs the `smep` command from the release's own universal
+build and follows new releases by itself. (No Linux formula: that binary
+needs the system's X11, xkbcommon, Wayland and Vulkan libraries, which a
+Homebrew prefix does not provide; use `cargo install` or the release
+tarball there.) `smep --version` and `smep --help` print and exit without
+opening a window.
 
 Building from source needs a Rust toolchain and, on Linux, a few system
 libraries; see [docs/dev.md](docs/dev.md).
 
 ## Make it the default for `.md`
 
-- **macOS**: use the `smep.app` from a GitHub release, or the one Homebrew
-  keeps at `$(brew --prefix smep)/smep.app` (a `cargo install` binary has no
-  bundle, so Finder cannot pick it). Right-click a `.md` file, Get Info,
-  Open with: smep, Change All. Files opened this way land in the running
-  window. The releases are not yet signed with a Developer ID, so the first
-  open from Finder needs right-click, Open.
+- **macOS**: use the `smep.app` from a GitHub release (a `cargo install` or
+  Homebrew binary has no bundle, so Finder cannot pick it). Right-click a
+  `.md` file, Get Info, Open with: smep, Change All. Files opened this way
+  land in the running window. The releases are not yet signed with a
+  Developer ID, so the first open from Finder needs right-click, Open.
 - **Windows**: `scripts\register-windows.ps1` adds smep to the "Open with"
   list (current user, no admin); then choose it once in Settings, Apps,
   Default apps, or right-click, Open with, Always.
