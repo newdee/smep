@@ -1,6 +1,8 @@
 //! smep — a Simple Markdown Editor & Previewer, written in Rust.
 //!
 //! Usage: `smep [FILE]`. With no argument the editor starts empty.
+//! `smep --version` and `smep --help` print and exit without a window, so
+//! package tests and shell completion can ask them on a headless machine.
 
 mod app;
 mod highlight;
@@ -21,9 +23,32 @@ use gpui_kit::*;
 use io::Document;
 use settings::Settings;
 
+const USAGE: &str = "\
+Usage: smep [FILE]
+
+A Simple Markdown Editor & Previewer. Opens FILE (Markdown or HTML), or an
+empty document.
+
+Options:
+  -h, --help     Print this help and exit
+  -V, --version  Print the version and exit";
+
 fn main() {
+    let argument = std::env::args_os().nth(1);
+    match argument.as_deref().and_then(|arg| arg.to_str()) {
+        Some("-h" | "--help") => {
+            println!("{USAGE}");
+            return;
+        }
+        Some("-V" | "--version") => {
+            println!("smep {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        _ => {}
+    }
+
     let settings = Settings::load();
-    let document = match std::env::args_os().nth(1).map(PathBuf::from) {
+    let document = match argument.map(PathBuf::from) {
         Some(path) => match Document::read(path.clone()) {
             Ok(document) => document,
             Err(err) => {
@@ -49,6 +74,10 @@ fn main() {
         gpui_kit::init(cx);
         keymap::init(cx);
         cx.set_menus(keymap::native_menus());
+        // One window is the whole application: with it gone there is no way
+        // to open another, so the process ends with it on every platform
+        // (gpui's default keeps a macOS app alive without windows).
+        cx.set_quit_mode(QuitMode::LastWindowClosed);
 
         // The window draws its own title bar (menus, document name, window
         // controls); the platform frame is hidden.

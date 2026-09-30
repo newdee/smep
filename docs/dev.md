@@ -61,13 +61,24 @@ Xcode command line tools, then `cargo run`.
    `Get-Content .env | ForEach-Object { if ($_ -match '^(\w+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }`).
 3. `git tag -a vX.Y.Z -m "smep X.Y.Z" && git push origin vX.Y.Z`.
 
-The tag runs `.github/workflows/release.yml`, which drafts a GitHub release
-with a Linux tarball, a Windows zip and a universal macOS `smep.app`.
+The tag runs `.github/workflows/release.yml`, which publishes a GitHub
+release with a Linux tarball, a Windows zip and a universal macOS `smep.app`.
 Run it by hand for an existing tag with
 `gh workflow run release.yml -f tag=vX.Y.Z`.
 
+The Homebrew formula in [newdee/homebrew-tap](https://github.com/newdee/homebrew-tap)
+(`Formula/smep.rb`) follows the latest published release on its own: a
+scheduled workflow there downloads the new archives, installs and tests
+them on macOS and Linux runners, and commits the bump only if both pass.
+To take a release at once instead of within six hours:
+`gh workflow run smep.yml --repo newdee/homebrew-tap`. The formula's test
+runs `smep --version`, which must print `smep X.Y.Z`.
+
 The macOS app is signed and notarized only when these repository secrets
-exist (they are the same six magpie uses):
+exist (they are the same six magpie uses). Without them it is ad-hoc signed
+by the linker, which is enough for the formula (a binary run from the
+terminal) and `cargo install`, while Finder refuses to open the bundle
+until a Developer ID signature is there:
 
 | Secret | Contents |
 |---|---|

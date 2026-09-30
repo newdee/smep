@@ -284,9 +284,8 @@ impl Smep {
             }
         });
 
-        let text = document.text;
-        let saved: SharedString = text.clone().into();
-        let this = Self {
+        let saved: SharedString = document.text.into();
+        let mut this = Self {
             editor,
             preview,
             rendered,
@@ -296,13 +295,14 @@ impl Smep {
             previewed: saved.clone(),
             saved,
             preview_refresh: None,
-            blocks: highlight::block_start_lines(&text),
+            blocks: Vec::new(),
             scroll_sync: None,
             insert_menu: None,
             focus_handle: cx.focus_handle(),
             settings,
             _subscriptions: subscriptions,
         };
+        this.schedule_block_table(window, cx);
         this.refresh_title(window);
         if this.settings.view_mode == ViewMode::Rendered {
             this.rendered
@@ -409,7 +409,7 @@ impl Smep {
     /// The File / Edit / View menus for the title bar. Every menu returns
     /// focus to the editor being typed in, so the editing actions land there.
     fn render_menu_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let editor_focus = self.active_editor(cx).focus_handle(cx);
+        let editor_focus = self.menu_focus(cx);
         let mode = self.view_mode();
         let menu_bar = self.menu_bar_shown();
         let current_theme = self.preview_theme();
@@ -529,39 +529,66 @@ impl Smep {
     fn schedule_preview_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preview_refresh = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
-            let _ = this.update(cx, |this, cx| this.refresh_preview(cx));
+            let Ok(Some(text)) = this.update(cx, |this, _| {
+                (this.previewed != this.source).then(|| this.source.clone())
+            }) else {
+                return;
+            };
+            // The block table is a whole-document parse, as costly as the
+            // preview's own (which the preview runs off the UI thread too).
+            let blocks = cx
+                .background_spawn({
+                    let text = text.clone();
+                    async move { highlight::block_start_lines(&text) }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| this.show_preview(text, blocks, cx));
         }));
     }
 
-    /// Hand the current source to the preview, if it does not have it yet.
-    fn refresh_preview(&mut self, cx: &mut Context<Self>) {
-        if self.previewed == self.source {
-            return;
-        }
-        self.previewed = self.source.clone();
-        let text = self.previewed.clone();
-        self.blocks = highlight::block_start_lines(&text);
+    /// Hand `text` to the preview, with `blocks` its block table.
+    fn show_preview(&mut self, text: SharedString, blocks: Vec<usize>, cx: &mut Context<Self>) {
+        self.previewed = text.clone();
+        self.blocks = blocks;
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
         self.scroll_sync = None;
         cx.notify();
     }
 
-    /// Point the preview at `text` in `format`, right away.
-    fn set_preview(&mut self, format: PreviewFormat, cx: &mut Context<Self>) {
+    /// Point the preview at the current source in `format`, right away. The
+    /// block table follows a moment later; until then the scroll sync goes
+    /// by proportion.
+    fn set_preview(&mut self, format: PreviewFormat, window: &mut Window, cx: &mut Context<Self>) {
         self.preview_refresh = None;
-        self.previewed = self.source.clone();
-        let text = self.previewed.clone();
-        self.blocks = highlight::block_start_lines(&text);
+        let text = self.source.clone();
         if format != self.format {
             self.format = format;
             self.preview = cx.new(|cx| preview_state(format, &text, cx));
-        } else {
-            self.preview
-                .update(cx, |state, cx| state.set_text(&text, cx));
         }
-        self.scroll_sync = None;
-        cx.notify();
+        self.show_preview(text, Vec::new(), cx);
+        self.schedule_block_table(window, cx);
+    }
+
+    /// Compute the block table for what the preview shows, off the UI
+    /// thread, and adopt it if the preview still shows that text.
+    fn schedule_block_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.previewed.clone();
+        self.preview_refresh = Some(cx.spawn_in(window, async move |this, cx| {
+            let blocks = cx
+                .background_spawn({
+                    let text = text.clone();
+                    async move { highlight::block_start_lines(&text) }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.previewed == text {
+                    this.blocks = blocks;
+                    this.scroll_sync = None;
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     /// Scroll the preview to the block that holds the editor's top line.
@@ -621,7 +648,7 @@ impl Smep {
             .update(cx, |rendered, cx| rendered.deactivate(window, cx));
         self.editor
             .update(cx, |state, cx| state.set_value(document.text, window, cx));
-        self.set_preview(document.format, cx);
+        self.set_preview(document.format, window, cx);
         self.refresh_title(window);
     }
 
@@ -635,7 +662,7 @@ impl Smep {
                 let format = PreviewFormat::for_path(&path);
                 self.path = Some(path);
                 if format != self.format {
-                    self.set_preview(format, cx);
+                    self.set_preview(format, window, cx);
                 }
                 self.refresh_title(window);
                 cx.notify();
@@ -803,6 +830,19 @@ impl Smep {
         self.active_editor(cx).cursor_line_bounds(cx)
     }
 
+    /// Where a menu's actions are dispatched from, and where focus returns
+    /// when it closes: the editor being typed in, or the rendered view while
+    /// no block is being edited (the source editor is not on screen then,
+    /// and an action sent through its focus handle would go nowhere).
+    fn menu_focus(&self, cx: &App) -> FocusHandle {
+        match self.active_editor(cx) {
+            ActiveEditor::Source(_) if self.view_mode() == ViewMode::Rendered => {
+                self.rendered.read(cx).focus_handle().clone()
+            }
+            editor => editor.focus_handle(cx),
+        }
+    }
+
     /// Open a popup menu at `position`, replacing any menu already open.
     /// Actions in it dispatch from the editor, and focus returns there.
     fn open_menu(
@@ -812,7 +852,7 @@ impl Smep {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor_focus = self.active_editor(cx).focus_handle(cx);
+        let editor_focus = self.menu_focus(cx);
         let menu = PopupMenu::build(window, cx, |menu, _, _| {
             build(menu).action_context(editor_focus)
         });
@@ -1651,6 +1691,159 @@ mod tests {
         assert!(!cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)));
         type_text(&block, "tail", cx);
         assert_eq!(value(&editor(&smep, cx), cx), "# Title\n\ntail");
+    }
+
+    #[gpui_kit::test]
+    fn menus_dispatch_from_whatever_is_on_screen(cx: &mut TestAppContext) {
+        let dir = TempDir::new("menu-focus");
+        let path = dir.path("menu.md");
+        std::fs::write(&path, "# T\n\npara").unwrap();
+        let (smep, cx) = open_document(cx, Document::read(path.clone()).unwrap());
+        let editor = editor(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let focus = |cx: &VisualTestContext| cx.read(|cx| smep.read(cx).menu_focus(cx));
+
+        assert_eq!(
+            focus(cx),
+            cx.read(|cx| editor.focus_handle(cx)),
+            "split: the editor"
+        );
+        rendered_mode(&smep, cx);
+        assert_eq!(
+            focus(cx),
+            cx.read(|cx| rendered.read(cx).focus_handle().clone()),
+            "rendered, no block: the view itself"
+        );
+        activate_block(&smep, 5..9, cx);
+        let block = active_block(&smep, cx);
+        assert_eq!(focus(cx), cx.read(|cx| block.focus_handle(cx)), "the block");
+
+        // What a menu does: focus its context, dispatch. With no block on
+        // screen the action must still arrive (here: at the root's Save).
+        type_text(&block, "para!", cx);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(dirty(&smep, cx));
+        cx.update(|window, cx| {
+            let handle = smep.read(cx).menu_focus(cx);
+            handle.focus(window, cx);
+            window.dispatch_action(Box::new(Save), cx);
+        });
+        cx.run_until_parked();
+        assert!(!dirty(&smep, cx));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# T\n\npara!");
+    }
+
+    #[gpui_kit::test]
+    fn a_large_document_is_highlighted_after_the_pause_not_on_the_keystroke(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::highlight::{self, MarkdownHighlighter};
+        use gpui_kit::HighlightStyle;
+        use gpui_kit::component::input::{HighlightStyleResolver, InputHighlighter};
+
+        struct Faded;
+        impl HighlightStyleResolver for Faded {
+            fn style(&self, _: &str) -> Option<HighlightStyle> {
+                Some(HighlightStyle {
+                    fade_out: Some(0.5),
+                    ..Default::default()
+                })
+            }
+        }
+        let styled = |highlighter: &MarkdownHighlighter| {
+            highlighter
+                .styles(&(0..9), &Faded)
+                .iter()
+                .any(|(_, style)| style.fade_out.is_some())
+        };
+        let update = |highlighter: &mut MarkdownHighlighter,
+                      editor: &Entity<EditorState>,
+                      cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                editor.update(cx, |state, cx| {
+                    highlighter.update(None, state.text(), false, window, cx)
+                })
+            });
+        };
+
+        let big = "# Heading\n\ntext\n\n".repeat(highlight::SYNC_LIMIT / 16 + 1);
+        assert!(big.len() > highlight::SYNC_LIMIT);
+        let (smep, cx) = open(cx, &big);
+        let source = editor(&smep, cx);
+        let mut highlighter = MarkdownHighlighter::default();
+        update(&mut highlighter, &source, cx);
+        assert!(!styled(&highlighter), "nothing is parsed on the keystroke");
+        cx.executor().advance_clock(highlight::DEBOUNCE);
+        cx.run_until_parked();
+        assert!(styled(&highlighter), "parsed once typing paused");
+
+        // A small document is parsed on the spot.
+        let (smep, cx) = open(cx, "# Heading");
+        let source = editor(&smep, cx);
+        let mut highlighter = MarkdownHighlighter::default();
+        update(&mut highlighter, &source, cx);
+        assert!(styled(&highlighter));
+    }
+
+    #[gpui_kit::test]
+    fn block_edits_keep_the_block_list_equal_to_a_fresh_parse(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# Title\n\npara\n\n- x\n- y\n\n> quote");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let check = |cx: &mut VisualTestContext, when: &str| {
+            draw(cx);
+            let text = value(&document, cx);
+            assert_eq!(
+                cx.read(|cx| rendered.read(cx).block_ranges()),
+                crate::highlight::block_ranges(&text),
+                "{when}: {text:?}"
+            );
+        };
+
+        // A middle block: grown, split in two, emptied, refilled.
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+        for typed in ["para longer", "para\n\nsecond", "", "back"] {
+            type_text(&block, typed, cx);
+            check(cx, typed);
+        }
+
+        // The first block, then a new one at the end (with its gap).
+        activate_block(&smep, 0..7, cx);
+        type_text(&active_block(&smep, cx), "## Small", cx);
+        check(cx, "first block");
+        cx.update(|window, cx| {
+            rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
+        });
+        type_text(&active_block(&smep, cx), "tail", cx);
+        check(cx, "new block at the end");
+
+        // A change made elsewhere ends the edit and is parsed afresh.
+        type_text(&document, "# Other\n\nthing", cx);
+        check(cx, "source edit");
+
+        // From nothing, and with CRLF line endings.
+        for start in ["", "a\r\n\r\nb\r\n"] {
+            let (smep, cx) = open(cx, start);
+            let document = editor(&smep, cx);
+            rendered_mode(&smep, cx);
+            let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+            cx.update(|window, cx| {
+                rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
+            });
+            for typed in ["x", "x\r\n\r\ny", ""] {
+                type_text(&active_block(&smep, cx), typed, cx);
+                draw(cx);
+                let text = value(&document, cx);
+                assert_eq!(
+                    cx.read(|cx| rendered.read(cx).block_ranges()),
+                    crate::highlight::block_ranges(&text),
+                    "{start:?} then {typed:?}: {text:?}"
+                );
+            }
+        }
     }
 
     #[gpui_kit::test]

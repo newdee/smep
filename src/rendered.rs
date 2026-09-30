@@ -39,6 +39,12 @@ pub struct RenderedView {
     /// The document. Shared with the source view.
     source: Entity<EditorState>,
     active: Option<ActiveBlock>,
+    /// The top-level blocks of `blocks_text`. A whole-document parse costs
+    /// as much as the preview's, so it runs only when the text changed in a
+    /// way this view did not make itself; its own commits update the
+    /// blocks in place from the block's text alone.
+    blocks: Vec<Range<usize>>,
+    blocks_text: SharedString,
     palette: Option<Palette>,
     focus_handle: FocusHandle,
     scroll: ScrollHandle,
@@ -69,6 +75,8 @@ impl RenderedView {
         Self {
             source,
             active: None,
+            blocks: Vec::new(),
+            blocks_text: SharedString::default(),
             palette: None,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -94,6 +102,23 @@ impl RenderedView {
 
     fn text(&self, cx: &App) -> SharedString {
         self.source.read(cx).value()
+    }
+
+    /// The top-level blocks of the document as it is now, parsed afresh
+    /// only when the text is not the one the blocks were made for.
+    fn blocks(&mut self, cx: &App) -> &[Range<usize>] {
+        let text = self.text(cx);
+        if self.blocks_text != text {
+            self.blocks = highlight::block_ranges(&text);
+            self.blocks_text = text;
+        }
+        &self.blocks
+    }
+
+    /// The blocks for tests to check against a fresh parse.
+    #[cfg(test)]
+    pub fn block_ranges(&self) -> Vec<Range<usize>> {
+        self.blocks.clone()
     }
 
     /// The document range the active editor stands for.
@@ -209,17 +234,41 @@ impl RenderedView {
         // Since a gap was inserted, the editor's text starts later.
         active.start += text.len() - typed.len();
         active.committed_len = typed.len();
+        let start = active.start;
         self.source.update(cx, |state, cx| {
-            state.set_selected_range(range, cx);
-            state.replace(text, window, cx);
+            state.set_selected_range(range.clone(), cx);
+            state.replace(&text, window, cx);
         });
+
+        // The blocks outside the replaced range are as they were, moved by
+        // the growth; inside it the block's own text says what it holds.
+        // Only when the parse of the block on its own would differ from its
+        // parse in context (an unclosed fence, say) does this diverge, and
+        // the next whole-document parse, on the edit ending, settles that.
+        let growth = text.len() as isize - range.len() as isize;
+        let moved = |offset: usize| (offset as isize + growth) as usize;
+        let inside = highlight::block_ranges(&typed)
+            .into_iter()
+            .map(|block| block.start + start..block.end + start);
+        let before = self
+            .blocks
+            .iter()
+            .take_while(|block| block.end <= range.start)
+            .cloned();
+        let after = self
+            .blocks
+            .iter()
+            .filter(|block| block.start >= range.end && block.end > range.start)
+            .map(|block| moved(block.start)..moved(block.end));
+        self.blocks = before.chain(inside).chain(after).collect();
+        self.blocks_text = self.text(cx);
     }
 }
 
 impl Render for RenderedView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self.text(cx);
-        let ranges = highlight::block_ranges(&text);
+        let ranges = self.blocks(cx).to_vec();
+        let text = self.blocks_text.clone();
         let active = self.active_range();
         let palette = self.palette;
         let background = palette.map_or(cx.theme().background, |p| p.background);

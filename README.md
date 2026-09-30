@@ -12,10 +12,11 @@ place, block by block.
 
 ## Status
 
-`0.1.1` is the second release: it adds the frameless window with its view
-modes, in-place editing in the rendered view, and opening files from the OS.
-Expect rough edges; the editor and preview are built on gpui-kit and
-gpui-pre, which are themselves young.
+`0.1.2` is the third release: the frameless window with its view modes,
+in-place editing in the rendered view, opening files from the OS, a
+Homebrew formula, and typing that stays smooth in large documents (the
+Markdown parse runs off the keystroke). Expect rough edges; the editor and
+preview are built on gpui-kit and gpui-pre, which are themselves young.
 
 ## What it does
 
@@ -68,15 +69,27 @@ cargo install smep
 smep notes.md
 ```
 
+On a Mac or on Linux, Homebrew works too:
+
+```sh
+brew install newdee/tap/smep
+```
+
+The formula installs the release's own build (a universal app on macOS,
+run from the `smep` command) and follows new releases by itself.
+`smep --version` and `smep --help` print and exit without opening a window.
+
 Building from source needs a Rust toolchain and, on Linux, a few system
 libraries; see [docs/dev.md](docs/dev.md).
 
 ## Make it the default for `.md`
 
-- **macOS**: use the `smep.app` from a GitHub release (a `cargo install`
-  binary has no bundle, so Finder cannot pick it). Right-click a `.md` file,
-  Get Info, Open with: smep, Change All. Files opened this way land in the
-  running window.
+- **macOS**: use the `smep.app` from a GitHub release, or the one Homebrew
+  keeps at `$(brew --prefix smep)/smep.app` (a `cargo install` binary has no
+  bundle, so Finder cannot pick it). Right-click a `.md` file, Get Info,
+  Open with: smep, Change All. Files opened this way land in the running
+  window. The releases are not yet signed with a Developer ID, so the first
+  open from Finder needs right-click, Open.
 - **Windows**: `scripts\register-windows.ps1` adds smep to the "Open with"
   list (current user, no admin); then choose it once in Settings, Apps,
   Default apps, or right-click, Open with, Always.
