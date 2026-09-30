@@ -28,3 +28,10 @@ Tap run 36663895375 on the final commit (macOS runner, 48 s): `brew audit --form
 ```sh
 brew install newdee/tap/smep
 ```
+
+## Signing (same day, after the Apple secrets landed)
+
+`scripts/set-apple-secrets.ps1 -NoPrompt` set four of the six secrets from `~/.certs` (the certificate, its password, the identity and team id read out of the certificate's subject / the notes file); `APPLE_ID` and `APPLE_PASSWORD` are still missing, so the app is signed but not notarized.
+
+- Re-run 36665380124: "Import the Developer ID certificate" and "Sign" succeed, "Notarize and staple" skipped. The re-uploaded formula archive then **killed on start** in the tap (run 36665596117, `brew test` → exit status nil). Diagnostics in run 36665782260: `codesign --verify` on the installed binary says `invalid Info.plist (plist or signature have been modified)`; the system log has AMFI: "The code contains a Team ID, but validating its signature failed" → `Killed: 9`. Cause: signed with `--deep` inside the bundle, the executable's signature is bound to the bundle's Info.plist and does not validate once the file stands alone; an ad-hoc signature (the previous build) is not checked that strictly, a Team ID signature is.
+- Fix `ca6a148`: the Package step signs the tarball's copy of the binary again as a standalone executable (`codesign --force --options runtime --timestamp`) and verifies it. Re-run 36665927565 green; formula bumped to that archive (`1030f028…f579`, matches the `gh release download` copy); tap run 36666211639 green in 63 s, now with `codesign --verify --verbose=2` on the installed binary before `brew test`.

@@ -90,8 +90,9 @@ libraries; see [docs/dev.md](docs/dev.md).
 - **macOS**: use the `smep.app` from a GitHub release (a `cargo install` or
   Homebrew binary has no bundle, so Finder cannot pick it). Right-click a
   `.md` file, Get Info, Open with: smep, Change All. Files opened this way
-  land in the running window. The releases are not yet signed with a
-  Developer ID, so the first open from Finder needs right-click, Open.
+  land in the running window. The app is Developer ID signed but not yet
+  notarized, so the first open from Finder needs right-click, Open (or
+  System Settings, Privacy & Security, Open Anyway).
 - **Windows**: `scripts\register-windows.ps1` adds smep to the "Open with"
   list (current user, no admin); then choose it once in Settings, Apps,
   Default apps, or right-click, Open with, Always.

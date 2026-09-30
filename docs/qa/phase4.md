@@ -72,6 +72,8 @@ Round 3 result: 0 findings in smep. Two findings in the tap, both in the formula
 
 - Tap: the final formula's own workflow run is recorded in `release-0.1.2.md`.
 
+A third tap finding surfaced once the release was signed: a Developer ID signature made with `--deep` on the bundle does not validate on the executable taken out of it (bound to the bundle's Info.plist), and AMFI kills such a binary at exec. The tarball's binary is now signed on its own (`ca6a148`); details and run numbers in `release-0.1.2.md`.
+
 ## Not verified here
 
 - Windows window smoke: on this machine today every gpui window fails at start with `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE (0x887A0022)` while an `OrayIddDriver` virtual display is attached (the 0.1.1 binary from yesterday fails the same way, `GPUI_DISABLE_DIRECT_COMPOSITION=1` does not help), so no screenshots this round. The environment, not the code: nothing in smep touches the renderer.
