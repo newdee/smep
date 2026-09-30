@@ -166,10 +166,23 @@ jobs:
       - name: Package
         # The app bundle for Finder, and the bare universal binary for the
         # Homebrew formula (a formula installs a program, not a bundle).
+        # The binary inside a signed bundle carries a signature bound to the
+        # bundle's Info.plist, which fails to validate once the file stands
+        # alone (AMFI then kills it: "The code contains a Team ID, but
+        # validating its signature failed"), so the copy is signed again on
+        # its own.
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          mkdir -p dist
+          mkdir -p dist stage
           ditto -c -k --keepParent "$APP" "dist/smep-$VERSION-macos-universal.zip"
-          tar -C "$APP/Contents/MacOS" -czf "dist/smep-$VERSION-macos-universal.tar.gz" smep
+          cp "$APP/Contents/MacOS/smep" stage/smep
+          if [ "${SIGN:-}" = "1" ]; then
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" stage/smep
+            codesign --verify --verbose=2 stage/smep
+          fi
+          tar -C stage -czf "dist/smep-$VERSION-macos-universal.tar.gz" smep
       - uses: actions/upload-artifact@v4
         with:
           name: macos
