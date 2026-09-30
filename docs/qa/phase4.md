@@ -61,8 +61,16 @@ Round 2 result: 0 findings.
 ## Round 3 — boundaries and platforms
 
 - Boundaries: empty document and CRLF in the block-list test; `--version` on a headless run; a missing file still exits 1 with the reason.
-- CI: pending for the pushed commit.
-- Tap: pending, the formula's own workflow installs and tests the release on a macOS and a Linux runner.
+- CI run 36659257504 for `fab9e17`, all three jobs green (cold cache, so every dependency was rebuilt): ubuntu 15 m 06 s, windows 22 m 00 s, macos 13 m 39 s; 63 tests each.
+
+Round 3 result: 0 findings in smep. Two findings in the tap, both in the formula and its packaging, fixed before the formula landed:
+
+| Finding | Evidence | Fix |
+|---|---|---|
+| A formula may put `url` only inside `on_arm` / `on_intel`, not directly under `on_macos` | tap run 36662356961, `brew audit --strict`: "`on_macos` cannot include `url`" | the universal archive listed under both; the bump script updates two urls |
+| The formula could not reach `smep.app/Contents/MacOS/smep`: Homebrew enters an archive's single top-level directory when unpacking | tap run 36662567857, macOS: `Errno::ENOENT … smep.app/Contents/MacOS/smep`; Linux in the same run: `libxkbcommon-x11.so.0: cannot open shared object file` | the release ships `smep-vX-macos-universal.tar.gz` (the bare binary) next to the `.app` zip and the formula installs that; the formula is macOS only, since the Linux binary needs the system's X11/xkbcommon/Wayland/Vulkan libraries and glibc (`a01e59e`, release re-run for v0.1.2) |
+
+- Tap: the final formula's own workflow run is recorded in `release-0.1.2.md`.
 
 ## Not verified here
 
