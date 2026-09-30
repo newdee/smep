@@ -11,6 +11,10 @@ pub struct Document {
     pub path: Option<PathBuf>,
     pub text: String,
     pub format: PreviewFormat,
+    /// The file this Markdown was converted from (a PDF, a Word file…).
+    /// Such a document has no path of its own yet: it is unsaved, named
+    /// after the original, and saves next to it by default.
+    pub origin: Option<PathBuf>,
 }
 
 impl Document {
@@ -19,6 +23,7 @@ impl Document {
             path: None,
             text: String::new(),
             format: PreviewFormat::Markdown,
+            origin: None,
         }
     }
 
@@ -30,6 +35,19 @@ impl Document {
             path: Some(path),
             text,
             format,
+            origin: None,
+        })
+    }
+
+    /// Convert the file at `path` (a PDF, a Word file, text) into a new,
+    /// unsaved Markdown document.
+    pub fn import(path: PathBuf, format: crate::convert::Format) -> anyhow::Result<Self> {
+        let text = crate::convert::to_markdown(&path, format)?;
+        Ok(Self {
+            path: None,
+            text,
+            format: PreviewFormat::Markdown,
+            origin: Some(path),
         })
     }
 

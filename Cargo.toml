@@ -15,9 +15,12 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 [dependencies]
 anyhow = "1"
 dirs = "6"
+docx-rust = "0.1"
 futures = "0.3"
 gpui-kit = "0.6"
+htmd = "0.5"
 markdown = "1"
+pdf-inspector = "1.25"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 

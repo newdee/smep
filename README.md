@@ -40,6 +40,11 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   inside Markdown renders too, and `.html` files open straight into the
   HTML preview.
 - Open, save, save as; an unsaved-changes prompt before closing.
+- Other documents become Markdown: drop a PDF, Word (.docx) or text file on
+  the window, pick one under File, Import as Markdown (HTML too), or pass it
+  on the command line. The result is a new, unsaved document named after
+  the original. PDFs need a text layer; smep does no OCR. Images in Word
+  files are not carried over.
 - Light and dark, following the system.
 - One static binary, no web view, no Electron.
 
@@ -48,6 +53,7 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Action | Windows / Linux | macOS |
 |---|---|---|
 | Open | Ctrl+O | Cmd+O |
+| Import as Markdown | Ctrl+Shift+O | Cmd+Shift+O |
 | Save | Ctrl+S | Cmd+S |
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
 | Source / Split / Rendered view | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |

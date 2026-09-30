@@ -10,6 +10,7 @@ gpui_kit::actions!(
     smep,
     [
         Open,
+        Import,
         Save,
         SaveAs,
         Quit,
@@ -34,6 +35,7 @@ fn primary(keys: &str) -> String {
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(&primary("o"), Open, Some(CONTEXT)),
+        KeyBinding::new(&primary("shift-o"), Import, Some(CONTEXT)),
         KeyBinding::new(&primary("s"), Save, Some(CONTEXT)),
         KeyBinding::new(&primary("shift-s"), SaveAs, Some(CONTEXT)),
         KeyBinding::new(&primary("shift-m"), ToggleMenuBar, Some(CONTEXT)),
@@ -74,6 +76,7 @@ pub fn native_menus() -> Vec<Menu> {
             name: "File".into(),
             items: vec![
                 MenuItem::action("Open…", Open),
+                MenuItem::action("Import as Markdown…", Import),
                 MenuItem::action("Save", Save),
                 MenuItem::action("Save As…", SaveAs),
             ],

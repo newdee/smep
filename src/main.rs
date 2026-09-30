@@ -5,6 +5,7 @@
 //! package tests and shell completion can ask them on a headless machine.
 
 mod app;
+mod convert;
 mod highlight;
 mod insert;
 mod io;
@@ -27,7 +28,8 @@ const USAGE: &str = "\
 Usage: smep [FILE]
 
 A Simple Markdown Editor & Previewer. Opens FILE (Markdown or HTML), or an
-empty document.
+empty document. A PDF, Word (.docx) or text FILE is converted to a new,
+unsaved Markdown document.
 
 Options:
   -h, --help     Print this help and exit
@@ -49,13 +51,19 @@ fn main() {
 
     let settings = Settings::load();
     let document = match argument.map(PathBuf::from) {
-        Some(path) => match Document::read(path.clone()) {
-            Ok(document) => document,
-            Err(err) => {
-                eprintln!("smep: cannot read {}: {err}", path.display());
-                std::process::exit(1);
+        Some(path) => {
+            let read = match convert::Format::for_import(&path) {
+                Some(format) => Document::import(path.clone(), format),
+                None => Document::read(path.clone()).map_err(anyhow::Error::from),
+            };
+            match read {
+                Ok(document) => document,
+                Err(err) => {
+                    eprintln!("smep: cannot read {}: {err}", path.display());
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         None => Document::empty(),
     };
 

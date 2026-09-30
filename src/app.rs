@@ -25,12 +25,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::convert;
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
-    self, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource,
-    ViewSplit,
+    self, Import, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar, ViewRendered,
+    ViewSource, ViewSplit,
 };
 use crate::rendered::{RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
@@ -140,6 +141,9 @@ pub struct Smep {
     /// The rendered view, editable block by block; shares `editor`'s text.
     rendered: Entity<RenderedView>,
     path: Option<PathBuf>,
+    /// The file a converted document came from; names it and places its
+    /// first save while it has no path of its own.
+    origin: Option<PathBuf>,
     format: PreviewFormat,
     source: SharedString,
     previewed: SharedString,
@@ -284,15 +288,22 @@ impl Smep {
             }
         });
 
-        let saved: SharedString = document.text.into();
+        let source: SharedString = document.text.into();
+        // A converted document is new and unsaved; a read one is as on disk.
+        let saved = if document.origin.is_some() {
+            SharedString::default()
+        } else {
+            source.clone()
+        };
         let mut this = Self {
             editor,
             preview,
             rendered,
             path: document.path,
+            origin: document.origin,
             format: document.format,
-            source: saved.clone(),
-            previewed: saved.clone(),
+            source: source.clone(),
+            previewed: source,
             saved,
             preview_refresh: None,
             blocks: Vec::new(),
@@ -432,6 +443,7 @@ impl Smep {
                 let focus = editor_focus.clone();
                 move |menu, _, _| {
                     menu.menu("Open…", Box::new(Open))
+                        .menu("Import as Markdown…", Box::new(Import))
                         .menu("Save", Box::new(Save))
                         .menu("Save As…", Box::new(SaveAs))
                         .separator()
@@ -506,7 +518,7 @@ impl Smep {
         let title = format!(
             "{}{}",
             if self.is_dirty() { "● " } else { "" },
-            Document::display_name(self.path.as_deref())
+            Document::display_name(self.named_path().as_deref())
         );
         let muted = cx.theme().muted_foreground;
         let menu_bar = self.menu_bar_shown().then(|| self.render_menu_bar(cx));
@@ -633,15 +645,31 @@ impl Smep {
         self.source != self.saved
     }
 
-    fn refresh_title(&self, window: &mut Window) {
-        window.set_window_title(&Self::title_for(self.path.as_deref(), self.is_dirty()));
+    /// The document's path, or the one it would suggest: the original's
+    /// with `.md` for a converted document. `None` for a blank one.
+    fn named_path(&self) -> Option<PathBuf> {
+        self.path
+            .clone()
+            .or_else(|| self.origin.as_deref().map(convert::markdown_path_for))
     }
 
-    /// Replace the buffer with `document`, as after Open.
+    fn refresh_title(&self, window: &mut Window) {
+        window.set_window_title(&Self::title_for(
+            self.named_path().as_deref(),
+            self.is_dirty(),
+        ));
+    }
+
+    /// Replace the buffer with `document`, as after Open or Import.
     fn load(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
         self.path = document.path;
-        self.saved = document.text.clone().into();
-        self.source = self.saved.clone();
+        self.origin = document.origin;
+        self.source = document.text.clone().into();
+        self.saved = if self.origin.is_some() {
+            SharedString::default()
+        } else {
+            self.source.clone()
+        };
         // `set_value` emits no change event, so `source` is set by hand above
         // and the rendered view is told that its block is gone.
         self.rendered
@@ -698,15 +726,15 @@ impl Smep {
 
     /// Ask for a path, then save there. Resolves to whether it saved.
     fn save_as_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
-        let directory = self
-            .path
+        let named = self.named_path();
+        let directory = named
             .as_deref()
             .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
             .map(Path::to_path_buf)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
-        let suggested = self
-            .path
+        let suggested = named
             .as_deref()
             .map(|path| Document::display_name(Some(path)))
             .unwrap_or_else(|| "untitled.md".to_string());
@@ -728,7 +756,7 @@ impl Smep {
         }
         let detail = format!(
             "{} has unsaved changes.",
-            Document::display_name(self.path.as_deref())
+            Document::display_name(self.named_path().as_deref())
         );
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -787,8 +815,13 @@ impl Smep {
         .detach();
     }
 
-    /// Read `path` into the buffer, or report why not.
+    /// Read `path` into the buffer, or report why not. A PDF, Word or text
+    /// file is converted into a new Markdown document instead.
     fn load_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(format) = convert::Format::for_import(&path) {
+            self.import_path(path, format, window, cx);
+            return;
+        }
         match Document::read(path.clone()) {
             Ok(document) => self.load(document, window, cx),
             Err(err) => self.report(
@@ -797,6 +830,81 @@ impl Smep {
                 window,
                 cx,
             ),
+        }
+    }
+
+    /// Convert `path` off the UI thread (a PDF can take a while), then
+    /// load the Markdown as a new, unsaved document.
+    fn import_path(
+        &mut self,
+        path: PathBuf,
+        format: convert::Format,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            let converted = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { Document::import(path, format) }
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match converted {
+                Ok(document) => this.load(document, window, cx),
+                Err(err) => this.report(
+                    &format!("Could not import {}", path.display()),
+                    &format!("{err:#}"),
+                    window,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Pick a file to convert to Markdown: PDF, Word, HTML or text.
+    fn import(&mut self, _: &Import, window: &mut Window, cx: &mut Context<Self>) {
+        let proceed = self.confirm_discard(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if !proceed.await {
+                return;
+            }
+            let Ok(chosen) = this.update(cx, |_, cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: Some("Import".into()),
+                })
+            }) else {
+                return;
+            };
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                match convert::Format::for_explicit_import(&path) {
+                    Some(format) => this.import_path(path, format, window, cx),
+                    None => this.report(
+                        &format!("Cannot import {}", path.display()),
+                        "smep converts PDF (.pdf), Word (.docx), HTML (.html) and text (.txt) files.",
+                        window,
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Files dropped on the window: the first one opens (or, for a PDF,
+    /// Word or text file, is converted), after the unsaved-changes prompt.
+    fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = paths.paths().first() {
+            self.open_document_at(path.clone(), window, cx);
         }
     }
 
@@ -1146,12 +1254,19 @@ impl Render for Smep {
                 .into_any_element(),
         };
 
+        let drop_highlight = cx.theme().ring;
         window_border().child(
             v_flex()
                 .size_full()
                 .key_context(keymap::CONTEXT)
                 .track_focus(&self.focus_handle)
+                // Files from the desktop: a border while they hover, open on drop.
+                .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                    style.border_2().border_color(drop_highlight)
+                })
+                .on_drop(cx.listener(Self::on_drop))
                 .on_action(cx.listener(Self::open))
+                .on_action(cx.listener(Self::import))
                 .on_action(cx.listener(Self::save))
                 .on_action(cx.listener(Self::save_as))
                 .on_action(cx.listener(Self::quit))
@@ -1210,6 +1325,7 @@ mod tests {
                 path: None,
                 text: text.to_string(),
                 format: PreviewFormat::Markdown,
+                origin: None,
             },
         )
     }
@@ -1501,6 +1617,7 @@ mod tests {
             path: None,
             text: "# T".into(),
             format: PreviewFormat::Markdown,
+            origin: None,
         };
         let (smep, cx) = open_with(cx, document, settings);
         let editor = editor(&smep, cx);
@@ -1691,6 +1808,93 @@ mod tests {
         assert!(!cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)));
         type_text(&block, "tail", cx);
         assert_eq!(value(&editor(&smep, cx), cx), "# Title\n\ntail");
+    }
+
+    #[gpui_kit::test]
+    async fn importing_a_file_makes_a_new_unsaved_markdown_document(cx: &mut TestAppContext) {
+        let dir = TempDir::new("import");
+        let source = dir.path("notes.txt");
+        std::fs::write(&source, "plain notes\r\n\r\n\r\nmore\r\n").unwrap();
+        let (smep, cx) = open(cx, "");
+        let editor = editor(&smep, cx);
+
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.load_path(source.clone(), window, cx))
+        });
+        cx.run_until_parked();
+
+        assert_eq!(value(&editor, cx), "plain notes\n\nmore\n");
+        assert!(dirty(&smep, cx), "converted text is not on disk yet");
+        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), None);
+        assert_eq!(
+            cx.read(|cx| Smep::title_for(smep.read(cx).named_path().as_deref(), true)),
+            "● notes.md — smep"
+        );
+
+        // Save As suggests notes.md next to the original; saving there
+        // makes it the document's own path.
+        let saved = cx.update(|window, cx| smep.update(cx, |this, cx| this.save_task(window, cx)));
+        let target = dir.path("notes.md");
+        cx.simulate_new_path_selection({
+            let target = target.clone();
+            let expected_dir = dir.0.clone();
+            move |directory| {
+                assert_eq!(
+                    directory, expected_dir,
+                    "the dialog opens next to the original"
+                );
+                Some(target)
+            }
+        });
+        assert!(saved.await);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "plain notes\n\nmore\n"
+        );
+        assert!(!dirty(&smep, cx));
+        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(target));
+    }
+
+    #[gpui_kit::test]
+    fn a_dropped_file_opens_after_the_unsaved_changes_prompt(cx: &mut TestAppContext) {
+        use gpui_kit::{ExternalPaths, FileDropEvent};
+
+        let dir = TempDir::new("drop");
+        let dropped = dir.path("dropped.md");
+        std::fs::write(&dropped, "# Dropped").unwrap();
+        let (smep, cx) = open(cx, "");
+        let editor = editor(&smep, cx);
+        type_text(&editor, "unsaved", cx);
+        draw(cx);
+
+        let position = point(px(300.), px(300.));
+        let paths = ExternalPaths([dropped.clone()].into_iter().collect());
+        cx.simulate_event(FileDropEvent::Entered { position, paths });
+        cx.simulate_event(FileDropEvent::Submit { position });
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt(), "the unsaved edit is asked about");
+        cx.simulate_prompt_answer("Don't Save");
+        cx.run_until_parked();
+        assert_eq!(value(&editor, cx), "# Dropped");
+        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(dropped));
+    }
+
+    #[gpui_kit::test]
+    fn importing_something_unreadable_reports_instead_of_loading(cx: &mut TestAppContext) {
+        let dir = TempDir::new("import-bad");
+        let bad = dir.path("scan.pdf");
+        std::fs::write(&bad, b"not a pdf").unwrap();
+        let (smep, cx) = open(cx, "kept");
+        let editor = editor(&smep, cx);
+
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.load_path(bad, window, cx)));
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt(), "an error dialog is shown");
+        cx.simulate_prompt_answer("OK");
+        assert_eq!(value(&editor, cx), "kept");
+        assert!(!dirty(&smep, cx));
     }
 
     #[gpui_kit::test]
@@ -1888,6 +2092,7 @@ mod tests {
                         path: None,
                         text: "new".into(),
                         format: PreviewFormat::Markdown,
+                        origin: None,
                     },
                     window,
                     cx,
@@ -2239,6 +2444,7 @@ mod tests {
             path: None,
             text: "# T".into(),
             format: PreviewFormat::Markdown,
+            origin: None,
         };
         let (smep, cx) = open_with(cx, document, settings);
         draw(cx);
