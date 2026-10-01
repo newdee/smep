@@ -14,12 +14,12 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = ["pdf-import", "pdf-export"]
-# PDF → Markdown (pdf-inspector, ~11 MB of binary, most of it the CJK
-# character maps that Chinese PDFs need).
+# Sizes are of the Windows release binary (docs/qa/phase5.md).
+# PDF → Markdown (pdf-inspector): ~7 MB of binary.
 pdf-import = ["dep:pdf-inspector"]
 # Markdown → PDF: Typst typesets the document with the system's fonts
-# (Typst's own embedded fonts would add ~20 MB for Latin text alone, and
-# every platform ships fonts). ~30 MB of binary.
+# (Typst's own fonts would add ~10 MB for Latin text alone, and every
+# platform ships fonts). ~34 MB of binary.
 pdf-export = ["dep:typst-as-lib", "dep:typst-layout", "dep:typst-pdf"]
 
 [dependencies]

@@ -1,10 +1,11 @@
 //! Export: the document as a PDF (typeset by Typst) or as an HTML page.
 //!
 //! For PDF the Markdown syntax tree is rewritten as Typst markup, which
-//! Typst compiles with the system's fonts (so CJK text sets in a CJK face
-//! wherever one is installed) plus the fonts embedded in the binary for
-//! Latin text. The markup is plain text, so the rewrite is testable on its
-//! own and a compile failure names the construct that caused it.
+//! Typst compiles with the fonts installed on the machine (none are
+//! embedded, so CJK text sets in a CJK face wherever one is installed and
+//! a machine without any font cannot export). The markup is plain text, so
+//! the rewrite is testable on its own and a compile failure names the
+//! construct that caused it.
 
 // Without the `pdf-export` feature nothing compiles the markup, but the
 // writer stays (and stays tested): it is the part of this module that is
@@ -17,6 +18,8 @@ use std::path::Path;
 use anyhow::Result;
 use markdown::ParseOptions;
 use markdown::mdast::{AlignKind, Node};
+
+use crate::convert::LineStart;
 
 /// Fonts to try, in order, for body text: the system faces of each
 /// platform, Latin first and CJK after. Typst takes the first installed one
@@ -237,7 +240,11 @@ impl Writer {
                 );
             }
             Node::Paragraph(p) => {
-                let _ = writeln!(self.out, "{pad}{}", self.inline(&p.children));
+                let _ = writeln!(
+                    self.out,
+                    "{pad}{}",
+                    indented(&self.inline(&p.children), &pad)
+                );
             }
             Node::Code(code) => {
                 let lang = code
@@ -289,7 +296,7 @@ impl Writer {
                             let _ = writeln!(
                                 self.out,
                                 "{pad}{marker}{task}{}",
-                                self.inline(&p.children)
+                                indented(&self.inline(&p.children), &format!("{pad}  "))
                             );
                         }
                         Some(other) => {
@@ -315,7 +322,7 @@ impl Writer {
                 // nothing silently disappears.
                 let text = strip_tags(&html.value);
                 if !text.trim().is_empty() {
-                    let _ = writeln!(self.out, "{pad}{}", escape(text.trim()));
+                    let _ = writeln!(self.out, "{pad}{}", indented(&escape(text.trim()), &pad));
                 }
             }
             Node::Definition(_) | Node::FootnoteDefinition(_) => {}
@@ -324,7 +331,7 @@ impl Writer {
                 let _ = writeln!(
                     self.out,
                     "{pad}{}",
-                    self.inline(std::slice::from_ref(other))
+                    indented(&self.inline(std::slice::from_ref(other)), &pad)
                 );
             }
         }
@@ -479,19 +486,34 @@ impl Writer {
 }
 
 /// Text as Typst markup: every character that would otherwise be read as
-/// syntax gets a backslash.
+/// syntax gets a backslash, and so does a line start that Typst reads as a
+/// heading (`=`), a list (`-`, `+`) or a numbered item (`1.`).
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut line = LineStart::default();
     for ch in text.chars() {
-        if matches!(
+        let escaped = matches!(
             ch,
             '\\' | '#' | '*' | '_' | '`' | '$' | '<' | '>' | '@' | '[' | ']' | '/' | '~' | '\''
-        ) {
+        ) || (line.blank() && matches!(ch, '=' | '-' | '+'))
+            || (ch == '.' && line.after_number());
+        if escaped {
             out.push('\\');
         }
         out.push(ch);
+        line.next(ch);
     }
     out
+}
+
+/// Markup that may span lines, with every line after the first indented by
+/// `pad`: Typst ends a list item at the first line indented no deeper than
+/// its marker.
+fn indented(markup: &str, pad: &str) -> String {
+    if pad.is_empty() {
+        return markup.to_string();
+    }
+    markup.replace('\n', &format!("\n{pad}"))
 }
 
 /// A Typst string literal.
@@ -560,6 +582,27 @@ mod tests {
     }
 
     #[test]
+    fn line_starts_that_typst_reads_as_markup_are_escaped() {
+        // Plain text in Markdown, a heading or a list in Typst.
+        assert_eq!(
+            body("Total\n= 5\n\n\\- not a list\n\n\\+ nor this\n\n2\\. nor this\n"),
+            "Total\n\\= 5\n\n\\- not a list\n\n\\+ nor this\n\n2\\. nor this\n"
+        );
+        assert_eq!(body("a = b - c + 1. d\n"), "a = b - c + 1. d\n");
+    }
+
+    #[test]
+    fn continuation_lines_stay_inside_their_list_item() {
+        // Typst ends an item at the first line indented no deeper than its
+        // marker.
+        assert_eq!(
+            body("- one\n  two\n- three  \n  four\n"),
+            "- one\n  two\n- three \\\n  four\n"
+        );
+        assert_eq!(body("1. a\n   - b\n     c\n"), "1. a\n  - b\n    c\n");
+    }
+
+    #[test]
     fn lists_nest_and_keep_their_numbers_and_checks() {
         assert_eq!(
             body("3. three\n4. four\n   - nested\n\n- [x] done\n- [ ] todo\n"),
@@ -623,15 +666,27 @@ mod tests {
     #[cfg(all(feature = "pdf-export", feature = "pdf-import"))]
     #[test]
     fn a_document_compiles_to_a_pdf_whose_text_reads_back() {
-        let markdown = "# 标题 Title\n\nSome *text* with 中文, `code` and a list:\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\nnote[^1]\n\n[^1]: The footnote.\n";
+        let markdown = "# 标题 Title\n\nSome *text* with 中文, `code` and a list:\n\n- one\n  wrapped\n- two\n\nTotal\n= 5\n\n2\\. counted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\nnote[^1]\n\n[^1]: The footnote.\n";
         let pdf = to_pdf(markdown, None).unwrap();
         assert!(pdf.starts_with(b"%PDF-"), "{:?}", &pdf[..8]);
 
         // The same reader the import uses gets the text back out: the fonts
-        // are embedded and the words are where a reader finds them.
+        // are embedded in the PDF and the words are where a reader finds
+        // them. The escaped line starts typeset as text, not as a heading
+        // or a list.
         let text = crate::convert::from_bytes(&pdf, crate::convert::Format::Pdf).unwrap();
         for expected in [
-            "Title", "Some", "text", "code", "one", "two", "fn main", "footnote",
+            "Title",
+            "Some",
+            "text",
+            "code",
+            "one",
+            "wrapped",
+            "two",
+            "= 5",
+            "2. counted",
+            "fn main",
+            "footnote",
         ] {
             assert!(
                 text.contains(expected),
@@ -641,6 +696,69 @@ mod tests {
         // CJK needs a system font: Windows and macOS ship one, and CI
         // installs Noto CJK on Linux.
         assert!(text.contains("中文"), "{text:?}");
+    }
+
+    #[cfg(feature = "pdf-export")]
+    #[test]
+    fn the_same_document_exports_to_the_same_bytes() {
+        // No timestamp or random id in the PDF, so an export can be
+        // compared with the last one.
+        let markdown = "# Same\n\nText, a [link](https://x.y) and a list:\n\n- one\n- two\n";
+        let first = to_pdf(markdown, None).unwrap();
+        let second = to_pdf(markdown, None).unwrap();
+        assert!(first == second, "{} vs {} bytes", first.len(), second.len());
+        // For comparing across processes (`--nocapture`): the font list is
+        // read from the system on each run.
+        let hash = first.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        eprintln!("pdf fnv1a {hash:016x}, {} bytes", first.len());
+        assert_eq!(
+            to_html(markdown, "Same"),
+            to_html(markdown, "Same"),
+            "HTML too"
+        );
+    }
+
+    #[cfg(feature = "pdf-export")]
+    #[test]
+    fn degenerate_inputs_typeset_without_error() {
+        for markdown in [
+            "",
+            "\n",
+            "=",
+            "\\-",
+            "\\+",
+            "1\\.",
+            "9999999999\\. ten digits",
+            "  = indented",
+            "a\r\n= crlf\r\n",
+            "- \n",
+            "-\n\n  orphan",
+            "1. \n   = x",
+            "> = in a quote\n> - not a list",
+            "- a  \n  \\- b  \n  \\= c",
+            "| = | - |\n|---|---|\n| + | 1. |",
+            "[^n]\n\n[^n]: = foot\n  - note",
+            "\\#\\$\\@\\/\\/\\~\\'",
+            "<b>= html</b>",
+        ] {
+            let result = to_pdf(markdown, None);
+            assert!(result.is_ok(), "{markdown:?}: {:?}", result.err());
+        }
+    }
+
+    #[test]
+    fn escaping_is_linear_in_a_long_line() {
+        let line = "1".repeat(1 << 20) + ". =";
+        let started = std::time::Instant::now();
+        let escaped = escape(&line);
+        assert!(
+            escaped.ends_with("\\. ="),
+            "{}",
+            &escaped[escaped.len() - 8..]
+        );
+        assert!(started.elapsed().as_secs() < 2, "{:?}", started.elapsed());
     }
 
     #[cfg(feature = "pdf-export")]

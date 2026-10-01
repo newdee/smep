@@ -253,7 +253,11 @@ fn paragraph_markdown(
     if let Some(level) = heading {
         return Some(format!("{} {}", "#".repeat(level), inline.trim()));
     }
-    if let Some(numbering) = property.and_then(|p| p.numbering.as_ref()) {
+    // numId 0 is how Word switches a style's numbering off.
+    if let Some(numbering) = property
+        .and_then(|p| p.numbering.as_ref())
+        .filter(|n| n.id.as_ref().map(|id| id.value) != Some(0))
+    {
         let id = numbering.id.as_ref().map(|id| id.value).unwrap_or_default();
         let level = numbering
             .level
@@ -278,13 +282,17 @@ fn paragraph_markdown(
 /// line breaks as hard breaks.
 fn inline_markdown(paragraph: &Paragraph, link_target: &dyn Fn(&str) -> Option<String>) -> String {
     let mut out = String::new();
+    let mut pending = Styled::default();
     for content in &paragraph.content {
         match content {
-            ParagraphContent::Run(run) => push_run(&mut out, run),
+            ParagraphContent::Run(run) => pending.push(&mut out, run),
             ParagraphContent::Link(link) => {
+                pending.flush(&mut out);
                 let mut text = String::new();
                 if let Some(run) = &link.content {
-                    push_run(&mut text, run);
+                    let mut styled = Styled::default();
+                    styled.push(&mut text, run);
+                    styled.flush(&mut text);
                 }
                 let target = link.id.as_deref().and_then(link_target);
                 match target {
@@ -294,31 +302,65 @@ fn inline_markdown(paragraph: &Paragraph, link_target: &dyn Fn(&str) -> Option<S
                     _ => out.push_str(&text),
                 }
             }
-            ParagraphContent::SDT(sdt) => out.push_str(&escape(&sdt.text())),
+            ParagraphContent::SDT(sdt) => {
+                pending.flush(&mut out);
+                out.push_str(&escape(&sdt.text()));
+            }
             _ => {}
         }
     }
+    pending.flush(&mut out);
     out
 }
 
-fn push_run(out: &mut String, run: &docx_rust::document::Run) {
-    let property = run.property.as_ref();
-    let on = |flag: Option<bool>| flag != Some(false);
-    let bold = property
-        .and_then(|p| p.bold.as_ref())
-        .is_some_and(|b| on(b.value));
-    let italic = property
-        .and_then(|p| p.italics.as_ref())
-        .is_some_and(|i| on(i.value));
-    let mut text = String::new();
-    for content in &run.content {
-        match content {
-            RunContent::Text(t) => text.push_str(&t.text),
-            RunContent::Tab(_) => text.push(' '),
-            RunContent::Break(_) | RunContent::CarriageReturn(_) => text.push_str("  \n"),
-            _ => {}
+/// The text of consecutive runs with the same emphasis. Word splits text
+/// into runs freely (spell checking, revisions), and marking each run on
+/// its own would put `*foo**bar*` side by side, which CommonMark renders
+/// with literal asterisks; so runs are joined and marked once.
+#[derive(Default)]
+struct Styled {
+    text: String,
+    bold: bool,
+    italic: bool,
+}
+
+impl Styled {
+    fn push(&mut self, out: &mut String, run: &docx_rust::document::Run) {
+        let property = run.property.as_ref();
+        let on = |flag: Option<bool>| flag != Some(false);
+        let bold = property
+            .and_then(|p| p.bold.as_ref())
+            .is_some_and(|b| on(b.value));
+        let italic = property
+            .and_then(|p| p.italics.as_ref())
+            .is_some_and(|i| on(i.value));
+        let mut text = String::new();
+        for content in &run.content {
+            match content {
+                RunContent::Text(t) => text.push_str(&t.text),
+                RunContent::Tab(_) => text.push(' '),
+                RunContent::Break(_) | RunContent::CarriageReturn(_) => text.push_str("  \n"),
+                _ => {}
+            }
         }
+        if text.is_empty() {
+            return;
+        }
+        if (bold, italic) != (self.bold, self.italic) {
+            self.flush(out);
+            self.bold = bold;
+            self.italic = italic;
+        }
+        self.text.push_str(&text);
     }
+
+    fn flush(&mut self, out: &mut String) {
+        emphasize(out, &self.text, self.bold, self.italic);
+        self.text.clear();
+    }
+}
+
+fn emphasize(out: &mut String, text: &str, bold: bool, italic: bool) {
     if text.is_empty() {
         return;
     }
@@ -371,19 +413,57 @@ fn table_markdown(rows: &[Vec<String>]) -> Option<String> {
     Some(out.trim_end().to_string())
 }
 
-/// Characters that would otherwise be read as Markdown syntax.
+/// Characters that would otherwise be read as Markdown syntax: everywhere,
+/// and at a line's start (after any spaces) the ones that open a heading,
+/// a list, a table, a fence or a setext underline.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for (ix, ch) in text.char_indices() {
-        let at_line_start = ix == 0 || text[..ix].ends_with('\n');
+    let mut line = LineStart::default();
+    for ch in text.chars() {
         let escaped = matches!(ch, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '>')
-            || (at_line_start && matches!(ch, '#' | '-' | '+' | '|'));
+            || (line.blank() && matches!(ch, '#' | '-' | '+' | '|' | '=' | '~'))
+            || (matches!(ch, '.' | ')') && line.after_number());
         if escaped {
             out.push('\\');
         }
         out.push(ch);
+        line.next(ch);
     }
     out
+}
+
+/// Where a scan stands relative to the start of its line, for escapers that
+/// must neutralise markers there: only spaces so far, or spaces and then
+/// only digits (an ordered-list number).
+#[derive(Clone, Copy)]
+pub struct LineStart {
+    /// Digits seen after the leading spaces; `None` once anything else is.
+    digits: Option<usize>,
+}
+
+impl Default for LineStart {
+    fn default() -> Self {
+        Self { digits: Some(0) }
+    }
+}
+
+impl LineStart {
+    pub fn blank(self) -> bool {
+        self.digits == Some(0)
+    }
+
+    pub fn after_number(self) -> bool {
+        self.digits.is_some_and(|n| n > 0)
+    }
+
+    pub fn next(&mut self, ch: char) {
+        self.digits = match (ch, self.digits) {
+            ('\n', _) => Some(0),
+            (' ', Some(0)) => Some(0),
+            (ch, Some(n)) if ch.is_ascii_digit() => Some(n + 1),
+            _ => None,
+        };
+    }
 }
 
 /// LF line endings, no trailing whitespace on lines, no more than one
@@ -592,6 +672,69 @@ mod tests {
     }
 
     #[test]
+    fn word_runs_split_mid_format_stay_one_emphasis() {
+        use docx_rust::document::Run;
+        use docx_rust::formatting::{CharacterProperty, Italics};
+
+        // Word splits text into runs for spell checking and revisions; two
+        // italic runs side by side must not come out as `*foo**bar*`,
+        // which CommonMark renders with literal asterisks.
+        let italic = |text: &'static str| {
+            Run::default()
+                .property(CharacterProperty::default().italics(Italics::from(true)))
+                .push_text(text)
+        };
+        let bytes = docx_bytes(|docx| {
+            docx.document.push(
+                Paragraph::default()
+                    .push(Run::default().push_text("A "))
+                    .push(italic("foo"))
+                    .push(italic("bar "))
+                    .push(Run::default().push_text("end.")),
+            );
+        });
+        let md = from_bytes(&bytes, Format::Docx).unwrap();
+        assert_eq!(md, "A *foobar* end.\n");
+        assert_eq!(markdown::to_html(&md), "<p>A <em>foobar</em> end.</p>\n");
+        // What marking each run on its own gave.
+        assert!(markdown::to_html("A *foo**bar* end.").contains("**"));
+    }
+
+    #[test]
+    fn word_numbering_id_zero_is_not_a_list() {
+        use docx_rust::formatting::{
+            IndentLevel, NumberingId, NumberingProperty, ParagraphProperty,
+        };
+
+        // numId 0 is how Word switches a style's numbering off.
+        let bytes = docx_bytes(|docx| {
+            docx.document.push(
+                Paragraph::default()
+                    .property(ParagraphProperty::default().numbering(NumberingProperty {
+                        id: Some(NumberingId::from(0isize)),
+                        level: Some(IndentLevel::from(0isize)),
+                        ..Default::default()
+                    }))
+                    .push_text("not a list"),
+            );
+        });
+        assert_eq!(from_bytes(&bytes, Format::Docx).unwrap(), "not a list\n");
+    }
+
+    #[test]
+    fn escaping_is_linear_in_a_long_line() {
+        let line = "1".repeat(1 << 20) + ". =";
+        let started = std::time::Instant::now();
+        let escaped = escape(&line);
+        assert!(
+            escaped.ends_with("\\. ="),
+            "{}",
+            &escaped[escaped.len() - 8..]
+        );
+        assert!(started.elapsed().as_secs() < 2, "{:?}", started.elapsed());
+    }
+
+    #[test]
     fn empty_and_broken_word_files_are_errors_not_panics() {
         assert!(from_bytes(b"", Format::Docx).is_err());
         assert!(from_bytes(b"PK\x03\x04junk", Format::Docx).is_err());
@@ -604,6 +747,19 @@ mod tests {
         assert_eq!(escape("a*b_c`d[e]"), "a\\*b\\_c\\`d\\[e\\]");
         assert_eq!(escape("# not a heading"), "\\# not a heading");
         assert_eq!(escape("5 - 3"), "5 - 3");
+        // Line starts that would open a list, a setext underline or a fence.
+        assert_eq!(escape("1. Intro"), "1\\. Intro");
+        assert_eq!(escape("12) b"), "12\\) b");
+        assert_eq!(escape("a\n==="), "a\n\\===");
+        assert_eq!(escape("~~~"), "\\~~~");
+        assert_eq!(escape("in 2024. Then"), "in 2024. Then");
+        for text in ["1. Intro", "a  \n===", "~~~", "a  \n---"] {
+            let html = markdown::to_html(&escape(text));
+            assert!(
+                !html.contains("<ol") && !html.contains("<h") && !html.contains("<pre"),
+                "{text:?} -> {html}"
+            );
+        }
         assert_eq!(normalize("\n\na\n\n\n\nb   \n\n"), "a\n\nb\n");
     }
 }

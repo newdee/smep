@@ -94,7 +94,7 @@ opening a window.
 
 Building from source needs a Rust toolchain and, on Linux, a few system
 libraries; see [docs/dev.md](docs/dev.md). PDF import and PDF export are
-the two heavy parts of the binary (about 11 MB and 30 MB); a build without
+the two heavy parts of the binary (about 7 MB and 34 MB); a build without
 them, `cargo install smep --no-default-features`, keeps everything else
 and reports the missing feature if asked for it.
 
