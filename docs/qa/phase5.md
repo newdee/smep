@@ -131,6 +131,8 @@ Round 6 result: 0 findings.
 
 Round 7 result: 0 findings. Three clean rounds in a row: accepted.
 
+CI run 36908331766 on `3bdac5c`: green on all three. Tests: Linux 94 (with the CJK read-back and the 18 degenerate inputs typeset against CI's installed fonts), Windows 94, macOS 93 (the one `cfg(not(target_os = "macos"))` test). Release binaries: Linux 74,434,744, Windows 64,933,888, macOS 51,276,256 bytes. The test step takes 19–30 s on CI against ~6.5 s here, most of it the Typst compiles in debug builds.
+
 ## Not verified here
 
 - Windows window smoke (drop gesture, the export dialogs): the DirectX failure on this machine (see `phase4.md`) still blocks every gpui window today; the drop is exercised headless through `FileDropEvent::Entered` + `Submit`.
