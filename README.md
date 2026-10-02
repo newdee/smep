@@ -12,10 +12,11 @@ place, block by block.
 
 ## Status
 
-`0.1.2` is the third release: the frameless window with its view modes,
-in-place editing in the rendered view, opening files from the OS, a
-Homebrew formula, and typing that stays smooth in large documents (the
-Markdown parse runs off the keystroke). Expect rough edges; the editor and
+`0.1.3` is the fourth release: it adds importing PDF, Word, HTML and text
+files as Markdown, and exporting the document as a PDF or an HTML page, on
+top of the frameless window with its view modes, in-place editing in the
+rendered view, opening files from the OS, a Homebrew formula, and typing
+that stays smooth in large documents. Expect rough edges; the editor and
 preview are built on gpui-kit and gpui-pre, which are themselves young.
 
 ## What it does
