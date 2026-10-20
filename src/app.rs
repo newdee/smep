@@ -32,8 +32,8 @@ use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
-    self, ExportHtml, ExportPdf, Import, MakeDefault, Open, Quit, Save, SaveAs, ToggleFullscreen,
-    ToggleMenuBar, ViewRendered, ViewSource, ViewSplit,
+    self, ExportHtml, ExportPdf, Import, MakeDefault, Open, Quit, Save, SaveAs, ToggleEditing,
+    ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource, ViewSplit,
 };
 use crate::rendered::{RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
@@ -157,6 +157,9 @@ pub struct Smep {
     scroll_sync: Option<usize>,
     insert_menu: Option<InsertMenu>,
     settings: Settings,
+    /// Editing, or reading: the document rendered and untouchable. Every
+    /// launch starts reading; this is not remembered.
+    editing: bool,
     /// Focus for the window when no editor is shown (rendered mode), so the
     /// shortcuts bound on the root keep working.
     focus_handle: FocusHandle,
@@ -313,18 +316,57 @@ impl Smep {
             insert_menu: None,
             focus_handle: cx.focus_handle(),
             settings,
+            editing: false,
             _subscriptions: subscriptions,
         };
         this.schedule_block_table(window, cx);
         this.refresh_title(window);
-        if this.settings.view_mode == ViewMode::Rendered {
-            this.rendered
-                .read(cx)
-                .focus_handle()
-                .clone()
-                .focus(window, cx);
-        }
+        // Reading mode: the rendered view, read-only, holds the focus so
+        // the root's shortcuts work.
+        this.rendered
+            .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
+        this.rendered
+            .read(cx)
+            .focus_handle()
+            .clone()
+            .focus(window, cx);
         this
+    }
+
+    #[cfg(test)]
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    /// What the window shows: the chosen view mode while editing, the
+    /// rendered document while reading.
+    pub fn layout(&self) -> ViewMode {
+        if self.editing {
+            self.settings.view_mode
+        } else {
+            ViewMode::Rendered
+        }
+    }
+
+    /// Switch between editing (the remembered view mode) and reading.
+    pub fn set_editing(&mut self, editing: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if editing {
+            self.set_view_mode(self.settings.view_mode, window, cx);
+            return;
+        }
+        if !self.editing {
+            return;
+        }
+        self.editing = false;
+        self.insert_menu = None;
+        self.rendered
+            .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
+        self.rendered
+            .read(cx)
+            .focus_handle()
+            .clone()
+            .focus(window, cx);
+        cx.notify();
     }
 
     pub fn preview_theme(&self) -> PreviewTheme {
@@ -346,12 +388,16 @@ impl Smep {
         self.settings.view_mode
     }
 
-    /// Show source, split, or rendered; remembered across runs.
+    /// Show source, split, or rendered; remembered across runs. Choosing a
+    /// view mode means editing, so reading mode ends.
     pub fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.view_mode != mode {
             self.settings.view_mode = mode;
             self.save_settings();
         }
+        self.editing = true;
+        self.rendered
+            .update(cx, |rendered, cx| rendered.set_read_only(false, window, cx));
         if mode == ViewMode::Rendered {
             // The rendered view takes focus (its active block, if any, takes
             // it from there), so the root's shortcuts keep working.
@@ -392,6 +438,10 @@ impl Smep {
         self.set_view_mode(ViewMode::Rendered, window, cx);
     }
 
+    fn toggle_editing(&mut self, _: &ToggleEditing, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_editing(!self.editing, window, cx);
+    }
+
     fn toggle_menu_bar(&mut self, _: &ToggleMenuBar, _: &mut Window, cx: &mut Context<Self>) {
         self.settings.menu_bar = !self.settings.menu_bar;
         self.save_settings();
@@ -424,6 +474,7 @@ impl Smep {
     fn render_menu_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let editor_focus = self.menu_focus(cx);
         let mode = self.view_mode();
+        let editing = self.editing;
         let menu_bar = self.menu_bar_shown();
         let current_theme = self.preview_theme();
         let this = cx.weak_entity();
@@ -477,6 +528,13 @@ impl Smep {
             .child(button("menu-view", "View").dropdown_menu({
                 let focus = editor_focus;
                 move |mut menu, window, cx| {
+                    menu = menu
+                        .item(
+                            PopupMenuItem::new("Editing")
+                                .checked(editing)
+                                .action(Box::new(ToggleEditing)),
+                        )
+                        .separator();
                     for candidate in [ViewMode::Source, ViewMode::Split, ViewMode::Rendered] {
                         let action: Box<dyn Action> = match candidate {
                             ViewMode::Source => Box::new(ViewSource),
@@ -529,6 +587,15 @@ impl Smep {
         );
         let muted = cx.theme().muted_foreground;
         let menu_bar = self.menu_bar_shown().then(|| self.render_menu_bar(cx));
+        // The one switch between reading and editing that needs no key.
+        let mode_button = Button::new("edit-toggle")
+            .label(if self.editing { "Read" } else { "Edit" })
+            .ghost()
+            .xsmall()
+            .tab_stop(false)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_editing(!this.editing, window, cx);
+            }));
         TitleBar::new()
             .child(
                 h_flex()
@@ -539,7 +606,16 @@ impl Smep {
                     .children(menu_bar)
                     .child(div().flex_1())
                     .child(div().text_sm().text_color(muted).child(title))
-                    .child(div().flex_1()),
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .pr_2()
+                            // The title bar starts a window move on mouse
+                            // down plus any movement, and the move swallows
+                            // the mouse up a click needs; the press stays here.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(mode_button),
+                    ),
             )
             .into_any_element()
     }
@@ -1057,7 +1133,7 @@ impl Smep {
     /// The editor the user is typing in: the active block in the rendered
     /// view, otherwise the source editor.
     fn active_editor(&self, cx: &App) -> ActiveEditor {
-        if self.view_mode() == ViewMode::Rendered
+        if self.layout() == ViewMode::Rendered
             && let Some(editor) = self.rendered.read(cx).active_editor()
         {
             return ActiveEditor::Block(editor);
@@ -1076,7 +1152,7 @@ impl Smep {
     /// and an action sent through its focus handle would go nowhere).
     fn menu_focus(&self, cx: &App) -> FocusHandle {
         match self.active_editor(cx) {
-            ActiveEditor::Source(_) if self.view_mode() == ViewMode::Rendered => {
+            ActiveEditor::Source(_) if self.layout() == ViewMode::Rendered => {
                 self.rendered.read(cx).focus_handle().clone()
             }
             editor => editor.focus_handle(cx),
@@ -1373,7 +1449,7 @@ impl Render for Smep {
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
 
-        let content = match self.view_mode() {
+        let content = match self.layout() {
             ViewMode::Source => editor.into_any_element(),
             ViewMode::Rendered => {
                 self.rendered
@@ -1408,6 +1484,7 @@ impl Render for Smep {
                 .on_action(cx.listener(Self::view_source))
                 .on_action(cx.listener(Self::view_split))
                 .on_action(cx.listener(Self::view_rendered))
+                .on_action(cx.listener(Self::toggle_editing))
                 .on_action(cx.listener(Self::toggle_menu_bar))
                 .on_action(cx.listener(Self::toggle_fullscreen))
                 .child(title_bar)
@@ -1472,7 +1549,22 @@ mod tests {
         open_with(cx, document, Settings::default())
     }
 
+    /// A window in editing mode (what most tests exercise); smep itself
+    /// starts reading, see `open_reading`.
     fn open_with(
+        cx: &mut TestAppContext,
+        document: Document,
+        settings: Settings,
+    ) -> (Entity<Smep>, &mut VisualTestContext) {
+        let (smep, cx) = open_reading(cx, document, settings);
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.set_editing(true, window, cx));
+        });
+        (smep, cx)
+    }
+
+    /// A window as smep opens it: reading.
+    fn open_reading(
         cx: &mut TestAppContext,
         document: Document,
         settings: Settings,
@@ -1780,6 +1872,75 @@ mod tests {
         cx.simulate_keystrokes(&primary("2"));
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
+    }
+
+    #[gpui_kit::test]
+    fn opens_reading_and_a_key_or_the_view_menu_starts_editing(cx: &mut TestAppContext) {
+        let dir = TempDir::new("reading");
+        let settings = Settings {
+            path: Some(dir.path("settings.toml")),
+            ..Settings::default()
+        };
+        let document = Document {
+            path: None,
+            text: "# Title\n\npara".into(),
+            format: PreviewFormat::Markdown,
+            origin: None,
+        };
+        let (smep, cx) = open_reading(cx, document, settings);
+        draw(cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let reading = |cx: &VisualTestContext| {
+            cx.read(|cx| {
+                let this = smep.read(cx);
+                (
+                    !this.is_editing(),
+                    this.layout(),
+                    this.rendered.read(cx).is_read_only(),
+                )
+            })
+        };
+        assert_eq!(reading(cx), (true, ViewMode::Rendered, true));
+        assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
+        assert!(
+            cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)),
+            "the rendered view holds the focus while reading"
+        );
+
+        // A click on a block does nothing while reading.
+        activate_block(&smep, 9..13, cx);
+        assert!(cx.read(|cx| rendered.read(cx).active_editor()).is_none());
+
+        // The editing key brings the remembered view mode (split) back.
+        cx.simulate_keystrokes(&primary("e"));
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(reading(cx), (false, ViewMode::Split, false));
+        let source = editor(&smep, cx);
+        assert!(
+            cx.update(|window, cx| source.read(cx).focus_handle(cx).is_focused(window)),
+            "the source editor takes the focus for editing"
+        );
+
+        // And back to reading: an edit in progress ends.
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 9..13, cx);
+        assert!(cx.read(|cx| rendered.read(cx).active_editor()).is_some());
+        cx.simulate_keystrokes(&primary("e"));
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(reading(cx), (true, ViewMode::Rendered, true));
+        assert!(cx.read(|cx| rendered.read(cx).active_editor()).is_none());
+
+        // A view-mode key while reading means editing in that mode.
+        cx.simulate_keystrokes(&primary("1"));
+        cx.run_until_parked();
+        assert_eq!(reading(cx), (false, ViewMode::Source, false));
+
+        // Reading is not a setting: the file knows the view mode only.
+        let saved = std::fs::read_to_string(dir.path("settings.toml")).unwrap();
+        assert!(saved.contains("view_mode = \"source\""), "{saved}");
+        assert!(!saved.contains("editing"), "{saved}");
     }
 
     fn rendered_mode(smep: &Entity<Smep>, cx: &mut VisualTestContext) {

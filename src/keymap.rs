@@ -19,6 +19,7 @@ gpui_kit::actions!(
         Quit,
         ToggleMenuBar,
         ToggleFullscreen,
+        ToggleEditing,
         ViewSource,
         ViewSplit,
         ViewRendered
@@ -43,6 +44,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&primary("shift-s"), SaveAs, Some(CONTEXT)),
         KeyBinding::new(&primary("shift-e"), ExportPdf, Some(CONTEXT)),
         KeyBinding::new(&primary("shift-m"), ToggleMenuBar, Some(CONTEXT)),
+        KeyBinding::new(&primary("e"), ToggleEditing, Some(CONTEXT)),
         KeyBinding::new(&primary("1"), ViewSource, Some(CONTEXT)),
         KeyBinding::new(&primary("2"), ViewSplit, Some(CONTEXT)),
         KeyBinding::new(&primary("3"), ViewRendered, Some(CONTEXT)),
@@ -110,6 +112,8 @@ pub fn native_menus() -> Vec<Menu> {
         Menu {
             name: "View".into(),
             items: vec![
+                MenuItem::action("Edit / Read", ToggleEditing),
+                MenuItem::separator(),
                 MenuItem::action("Source", ViewSource),
                 MenuItem::action("Split", ViewSplit),
                 MenuItem::action("Rendered", ViewRendered),

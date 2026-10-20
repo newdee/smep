@@ -38,6 +38,9 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   Solarized Light/Dark, or the application's own look): right-click the
   preview. The choice is remembered in `settings.toml` under the platform
   config directory.
+- Opens reading: the document rendered, nothing to click into by accident.
+  The Edit button in the title bar (or Ctrl+E) brings the editor in the
+  view mode you last used; Read (or Ctrl+E again) puts it away.
 - Markdown highlighting in the editor from the same parser the preview uses.
 - The preview follows the editor: whatever block is at the top of the editor
   is at the top of the preview.
@@ -67,7 +70,8 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Save | Ctrl+S | Cmd+S |
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
 | Export as PDF | Ctrl+Shift+E | Cmd+Shift+E |
-| Source / Split / Rendered view | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |
+| Edit, or back to reading | Ctrl+E (or the Edit / Read button) | Cmd+E (or the button) |
+| Source / Split / Rendered view (starts editing) | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |
 | Show or hide the menu bar | Ctrl+Shift+M | Cmd+Shift+M |
 | Full screen | F11 | Ctrl+Cmd+F |
 | Insert block (on an empty line) | `/` | `/` |

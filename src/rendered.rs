@@ -46,6 +46,8 @@ pub struct RenderedView {
     blocks: Vec<Range<usize>>,
     blocks_text: SharedString,
     palette: Option<Palette>,
+    /// Reading mode: blocks are shown, never opened for editing.
+    read_only: bool,
     focus_handle: FocusHandle,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -78,6 +80,7 @@ impl RenderedView {
             blocks: Vec::new(),
             blocks_text: SharedString::default(),
             palette: None,
+            read_only: false,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -98,6 +101,23 @@ impl RenderedView {
 
     pub fn focus_handle(&self) -> &FocusHandle {
         &self.focus_handle
+    }
+
+    #[cfg(test)]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Reading mode on or off. Turning it on ends any edit in progress.
+    pub fn set_read_only(&mut self, read_only: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only == read_only {
+            return;
+        }
+        if read_only {
+            self.deactivate(window, cx);
+        }
+        self.read_only = read_only;
+        cx.notify();
     }
 
     fn text(&self, cx: &App) -> SharedString {
@@ -141,7 +161,7 @@ impl RenderedView {
 
     /// Edit the block whose text sits at `range` in the document.
     pub fn activate(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_range() == Some(range.clone()) {
+        if self.read_only || self.active_range() == Some(range.clone()) {
             return;
         }
         self.deactivate(window, cx);
@@ -300,11 +320,16 @@ impl Render for RenderedView {
             items.push(self.render_active(cx));
         }
         if items.is_empty() {
+            let hint = if self.read_only {
+                "Nothing to read yet. Edit (the button in the title bar) to start writing."
+            } else {
+                "Click here to start writing."
+            };
             items.push(
                 div()
                     .id("empty")
                     .text_color(muted)
-                    .child("Click here to start writing.")
+                    .child(hint)
                     .into_any_element(),
             );
         }
@@ -351,7 +376,7 @@ impl RenderedView {
         div()
             .id(("block", ix))
             .w_full()
-            .cursor_text()
+            .when(!self.read_only, |this| this.cursor_text())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
