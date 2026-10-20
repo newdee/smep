@@ -81,6 +81,7 @@ fn main() {
 
     app.run(move |cx| {
         gpui_kit::init(cx);
+        theme::install(cx);
         keymap::init(cx);
         cx.set_menus(keymap::native_menus());
         // One window is the whole application: with it gone there is no way

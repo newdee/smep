@@ -31,9 +31,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - A menu of blocks (headings, lists, task list, quote, code block, table,
   divider, image, link) wherever you ask for it: type `/` on an empty line,
   click the `+` beside one, click below the end of the text, or right-click.
-- Seven preview themes (System, GitHub, Newsprint, Night, Sepia, Solarized
-  Light/Dark): right-click the preview. The choice is remembered in
-  `settings.toml` under the platform config directory.
+- Preview themes (Paper and Paper Dark, GitHub, Newsprint, Night, Sepia,
+  Solarized Light/Dark, or the application's own look): right-click the
+  preview. The choice is remembered in `settings.toml` under the platform
+  config directory.
 - Markdown highlighting in the editor from the same parser the preview uses.
 - The preview follows the editor: whatever block is at the top of the editor
   is at the top of the preview.
@@ -49,7 +50,9 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - Export as PDF (typeset by [Typst](https://typst.app), built in: headings,
   lists, tables, code, quotes, footnotes, local images; CJK text uses the
   system's fonts) or as a standalone HTML page, under File.
-- Light and dark, following the system.
+- Ink on paper: the application wears keepane's Paper look, light or dark
+  with the system (warm cream or warm near-black, Vitesse hues, cinnabar
+  for the cursor and headings).
 - One static binary, no web view, no Electron.
 
 ## Keys

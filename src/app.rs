@@ -1438,6 +1438,7 @@ mod tests {
     ) -> (Entity<Smep>, &mut VisualTestContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            crate::theme::install(cx);
             crate::keymap::init(cx);
         });
         cx.add_window_view(|window, cx| Smep::new(document, settings, window, cx))
@@ -2597,19 +2598,19 @@ mod tests {
         );
         draw(cx);
 
-        // First `down` selects System (the current one), the second GitHub.
+        // First `down` selects System (the current one), the second Paper.
         cx.simulate_keystrokes("down down enter");
         cx.run_until_parked();
 
         assert_eq!(
             cx.read(|cx| smep.read(cx).preview_theme()),
-            PreviewTheme::Github
+            PreviewTheme::Paper
         );
         assert!(!menu_open(&smep, cx));
         assert!(
             std::fs::read_to_string(dir.path("settings.toml"))
                 .unwrap()
-                .contains("preview_theme = \"github\"")
+                .contains("preview_theme = \"paper\"")
         );
     }
 
