@@ -218,7 +218,7 @@ mod platform {
         let bundle = CFBundle::main_bundle();
         let info = bundle.info_dictionary();
         let key = CFString::from_static_string("CFBundleIdentifier");
-        let value = info.find(key.as_CFType())?;
+        let value = info.find(&key)?;
         let value = value.downcast::<CFString>()?;
         Some(value.to_string())
     }
