@@ -74,4 +74,6 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-(filled in from the CI run)
+Run 39461470593 for `0f45706`, all three jobs green: ubuntu 5 m 04 s, windows 7 m 36 s, macos 7 m 48 s. Tests: windows 98 + 4, ubuntu 98 + 3, macos 96 + 3 (the two Windows-only unit tests and the PE-subsystem test account for the differences), 0 failed.
+
+Round 3 result: 0 findings.
