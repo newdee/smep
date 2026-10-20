@@ -104,17 +104,21 @@ and reports the missing feature if asked for it.
 
 ## Make it the default for `.md`
 
-- **macOS**: use the `smep.app` from a GitHub release (a `cargo install` or
-  Homebrew binary has no bundle, so Finder cannot pick it). Right-click a
-  `.md` file, Get Info, Open with: smep, Change All. Files opened this way
-  land in the running window. The app is Developer ID signed but not yet
-  notarized, so the first open from Finder needs right-click, Open (or
-  System Settings, Privacy & Security, Open Anyway).
-- **Windows**: `scripts\register-windows.ps1` adds smep to the "Open with"
-  list (current user, no admin); then choose it once in Settings, Apps,
-  Default apps, or right-click, Open with, Always.
-- **Linux**: copy `assets/smep.desktop` to `~/.local/share/applications/`
-  and run `xdg-mime default smep.desktop text/markdown`.
+File, "Open Markdown Files with smep" does what the system allows:
+
+- **macOS**: smep claims Markdown files outright, when it runs as the
+  `smep.app` from a GitHub release (a `cargo install` or Homebrew binary has
+  no bundle, so Finder cannot pick it; the menu item says so). Files opened
+  from Finder land in the running window. The app is Developer ID signed
+  but not yet notarized, so the first open from Finder needs right-click,
+  Open (or System Settings, Privacy & Security, Open Anyway).
+- **Windows**: smep registers itself (current user, no admin) and opens the
+  Settings page for it, where you choose smep next to `.md` once; Windows
+  keeps that choice to itself. `scripts\register-windows.ps1` does the same
+  registration from a terminal.
+- **Linux**: smep writes `~/.local/share/applications/smep.desktop` and runs
+  `xdg-mime default smep.desktop text/markdown`. (`assets/smep.desktop` is
+  the same file, for doing it by hand.)
 
 ## License
 

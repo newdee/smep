@@ -7706,6 +7706,7 @@ name = "smep"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "core-foundation 0.10.1",
  "dirs 6.0.0",
  "docx-rust",
  "futures",
@@ -7719,6 +7720,7 @@ dependencies = [
  "typst-as-lib",
  "typst-layout",
  "typst-pdf",
+ "winreg",
 ]
 
 [[package]]

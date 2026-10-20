@@ -26,13 +26,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::convert;
+use crate::defaults;
 use crate::export;
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
-    self, ExportHtml, ExportPdf, Import, Open, Quit, Save, SaveAs, ToggleFullscreen, ToggleMenuBar,
-    ViewRendered, ViewSource, ViewSplit,
+    self, ExportHtml, ExportPdf, Import, MakeDefault, Open, Quit, Save, SaveAs, ToggleFullscreen,
+    ToggleMenuBar, ViewRendered, ViewSource, ViewSplit,
 };
 use crate::rendered::{RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
@@ -450,6 +451,8 @@ impl Smep {
                         .separator()
                         .menu("Export as PDF…", Box::new(ExportPdf))
                         .menu("Export as HTML…", Box::new(ExportHtml))
+                        .separator()
+                        .menu("Open Markdown Files with smep", Box::new(MakeDefault))
                         .separator()
                         .menu("Quit", Box::new(Quit))
                         .action_context(focus.clone())
@@ -992,6 +995,43 @@ impl Smep {
         .detach();
     }
 
+    /// Become the system's program for Markdown files, as far as it allows,
+    /// and say what happened (or what is left to do).
+    fn make_default(&mut self, _: &MakeDefault, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_spawn(async { defaults::make_default() })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match outcome {
+                Ok(outcome) => {
+                    let title = if outcome.done {
+                        "smep is the default for Markdown"
+                    } else {
+                        "One step left"
+                    };
+                    let answered = window.prompt(
+                        PromptLevel::Info,
+                        title,
+                        Some(&outcome.message),
+                        &["OK"],
+                        cx,
+                    );
+                    cx.spawn(async move |_, _| {
+                        let _ = answered.await;
+                    })
+                    .detach();
+                }
+                Err(err) => this.report(
+                    "Could not make smep the default for Markdown",
+                    &format!("{err:#}"),
+                    window,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
     /// Files dropped on the window: the first one opens (or, for a PDF,
     /// Word or text file, is converted), after the unsaved-changes prompt.
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
@@ -1361,6 +1401,7 @@ impl Render for Smep {
                 .on_action(cx.listener(Self::import))
                 .on_action(cx.listener(Self::export_pdf))
                 .on_action(cx.listener(Self::export_html))
+                .on_action(cx.listener(Self::make_default))
                 .on_action(cx.listener(Self::save))
                 .on_action(cx.listener(Self::save_as))
                 .on_action(cx.listener(Self::quit))

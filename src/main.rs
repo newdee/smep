@@ -6,6 +6,7 @@
 
 mod app;
 mod convert;
+mod defaults;
 mod export;
 mod highlight;
 mod insert;
