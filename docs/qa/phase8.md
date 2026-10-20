@@ -77,4 +77,6 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-(filled in below from the CI run)
+The run for `5684a0d` itself (39453167246) was cancelled by the next push (the 0.1.5 version bump) after its tests had already passed on all three platforms (ubuntu 97 + 3, macos 95 + 3, windows 97 + 4). The run that covers it is 39453565196 for `353ae87` (`Release 0.1.5`, same code): all three jobs green, ubuntu 5 m 56 s, macos 7 m 49 s, windows 16 m 46 s, same test counts. On Windows CI the runner has a console, so `version_prints_the_crate_version` there takes the AttachConsole-succeeds path and proves the restored pipe.
+
+Round 3 result: 0 findings.
