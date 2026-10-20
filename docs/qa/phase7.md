@@ -40,7 +40,11 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending for the pushed commit.
+A finding first: the macOS job of run 39424714272 (`001eef0`) failed to compile `defaults.rs` — `CFDictionary::find` wants a key that is `ToVoid<CFString>`, and `key.as_CFType()` is `ToVoid<CFType>`; the code had only been compiled on Windows. Fixed in `9ca565e` (`find(&key)`); the round restarted.
+
+Run 39427813145 for `9ca565e`, all three jobs green: ubuntu 4 m 46 s, macos 24 m 35 s, windows 36 m 51 s; 97 tests each (the registry test on Windows, the desktop-entry test on Linux).
+
+Round 3 result: 0 findings.
 
 ## Not verified here
 

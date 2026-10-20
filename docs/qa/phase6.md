@@ -51,7 +51,9 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-Pending for the pushed commit.
+The run for `4f0f3bf` itself (39423687805) was cancelled by the next push's concurrency rule; the run that covers it is 39427813145 for `9ca565e` (theme + default-app menu + the macOS build fix), all three jobs green: ubuntu 4 m 46 s (warm cache), macos 24 m 35 s, windows 36 m 51 s; 97 tests each.
+
+Round 3 result: 0 findings.
 
 ## Not verified here
 
