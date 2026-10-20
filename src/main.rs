@@ -4,6 +4,11 @@
 //! `smep --version` and `smep --help` print and exit without a window, so
 //! package tests and shell completion can ask them on a headless machine.
 
+// A GUI program on Windows: no console window appears when smep is started
+// from Explorer, "Open with" or a shortcut. (The default, the console
+// subsystem, makes Windows open a terminal for any launch without one.)
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
 mod convert;
 mod defaults;
@@ -16,6 +21,7 @@ mod rendered;
 mod settings;
 mod theme;
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use futures::StreamExt as _;
@@ -37,15 +43,51 @@ Options:
   -h, --help     Print this help and exit
   -V, --version  Print the version and exit";
 
+/// A GUI-subsystem process gets no console of its own. When a terminal
+/// started smep, attach to the terminal's, so `--version`, `--help` and the
+/// error for an unreadable file print there. Started from Explorer there is
+/// no parent console, the call fails and nothing changes.
+///
+/// A standard handle the parent redirected (`smep --version > v.txt`, a
+/// pipe) arrives set, and AttachConsole would replace it with the console;
+/// those are put back, so redirection keeps working.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+    let kinds = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+    // SAFETY: plain Win32 calls on this process's own console state and
+    // standard handles, made once before any I/O.
+    unsafe {
+        let inherited = kinds.map(|kind| GetStdHandle(kind));
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+        for (kind, handle) in kinds.into_iter().zip(inherited) {
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetStdHandle(kind, handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
 fn main() {
+    attach_parent_console();
     let argument = std::env::args_os().nth(1);
     match argument.as_deref().and_then(|arg| arg.to_str()) {
+        // A closed pipe (`smep --help | head -1`) is not worth a panic.
         Some("-h" | "--help") => {
-            println!("{USAGE}");
+            let _ = writeln!(std::io::stdout(), "{USAGE}");
             return;
         }
         Some("-V" | "--version") => {
-            println!("smep {}", env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(std::io::stdout(), "smep {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         _ => {}

@@ -96,7 +96,11 @@ build and follows new releases by itself. (No Linux formula: that binary
 needs the system's X11, xkbcommon, Wayland and Vulkan libraries, which a
 Homebrew prefix does not provide; use `cargo install` or the release
 tarball there.) `smep --version` and `smep --help` print and exit without
-opening a window.
+opening a window. On Windows smep is a GUI program: no terminal window
+comes up with it, and in a terminal it still prints. PowerShell neither
+waits for a GUI program nor captures its output, so a script there asks
+through `cmd /c smep --version` (or `Start-Process -Wait
+-RedirectStandardOutput`).
 
 Building from source needs a Rust toolchain and, on Linux, a few system
 libraries; see [docs/dev.md](docs/dev.md). PDF import and PDF export are

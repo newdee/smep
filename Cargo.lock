@@ -7720,6 +7720,7 @@ dependencies = [
  "typst-as-lib",
  "typst-layout",
  "typst-pdf",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

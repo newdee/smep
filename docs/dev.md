@@ -48,6 +48,14 @@ Install the MSVC build tools (the Rust installer offers them), then
 `cargo run`. Nothing else is required. Windows is verified by CI on every
 push; day-to-day development happens on Linux.
 
+`smep.exe` is linked as a GUI program (`windows_subsystem = "windows"` in
+`main.rs`), so Explorer opens it without a terminal. Started from a
+terminal, it attaches to that terminal's console first, so `--version`,
+panics and anything on stderr still show in the window you ran `cargo run`
+from, and `smep --version > v.txt` still lands in the file (the redirected
+handles are kept). PowerShell is the exception: it does not wait for GUI
+programs, so `$v = smep --version` stays empty there; `cmd /c` does it.
+
 ## macOS
 
 Xcode command line tools, then `cargo run`.

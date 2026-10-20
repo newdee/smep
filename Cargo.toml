@@ -10,7 +10,7 @@ homepage = "https://github.com/newdee/smep"
 license = "MIT OR Apache-2.0"
 keywords = ["markdown", "editor", "preview", "gui", "gpui"]
 categories = ["text-editors"]
-include = ["src/**", "assets/themes/*", "Cargo.toml", "README.md", "LICENSE-*"]
+include = ["src/**", "tests/**", "assets/themes/*", "Cargo.toml", "README.md", "LICENSE-*"]
 
 [features]
 default = ["pdf-import", "pdf-export"]
@@ -41,6 +41,8 @@ typst-pdf = { version = "0.15", optional = true }
 # on macOS (both already in the dependency tree through gpui).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# AttachConsole, so a GUI-subsystem smep.exe still prints --version in a terminal.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
