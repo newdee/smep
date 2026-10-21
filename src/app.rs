@@ -1452,7 +1452,9 @@ impl Render for Smep {
             .overflow_hidden()
             .bg(palette.background)
             .text_color(palette.foreground)
-            .when_some(palette.font_family(), |this, family| this.font_family(family))
+            .when_some(palette.font_family(), |this, family| {
+                this.font_family(family)
+            })
             .px_6()
             .py_4()
             .on_mouse_down(

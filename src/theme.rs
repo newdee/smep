@@ -254,11 +254,7 @@ impl Palette {
             // rule under the header row instead of a filled one. The table's
             // own surface is the paper (the renderer's default is its own
             // theme's, which does not follow a fixed preview theme).
-            .with_table(
-                StyleRefinement::default()
-                    .border_0()
-                    .bg(self.background),
-            )
+            .with_table(StyleRefinement::default().border_0().bg(self.background))
             .with_table_cell(StyleRefinement::default().border_r_0())
             .with_table_head(
                 StyleRefinement::default()
@@ -344,13 +340,24 @@ mod tests {
             let style = palette.text_view_style(px(16.));
             assert_eq!(style.paragraph_gap(), rems(0.95), "{theme:?}");
             assert_eq!(style.heading_base_font_size(), px(16.));
-            assert_eq!(style.heading_font_size(1), Some(px(16.) * 1.62), "{theme:?}");
+            assert_eq!(
+                style.heading_font_size(1),
+                Some(px(16.) * 1.62),
+                "{theme:?}"
+            );
             assert_eq!(style.heading_font_size(2), Some(px(16.) * 1.46));
             assert_eq!(style.heading_font_size(3), Some(px(16.) * 1.2));
             assert_eq!(style.heading_font_size(6), Some(px(16.) * 0.92));
-            assert_eq!(style.heading_font_size(9), Some(px(16.) * 0.92), "out of range");
+            assert_eq!(
+                style.heading_font_size(9),
+                Some(px(16.) * 0.92),
+                "out of range"
+            );
             assert_eq!(style.code_block().border_widths.top, Some(px(1.).into()));
-            assert_eq!(style.code_block().corner_radii.top_left, Some(px(8.).into()));
+            assert_eq!(
+                style.code_block().corner_radii.top_left,
+                Some(px(8.).into())
+            );
             assert_eq!(style.table_cell().border_widths.right, Some(px(0.).into()));
             assert_eq!(
                 style.table().background,

@@ -18,10 +18,11 @@ Each round = review from one perspective + the full suite (`cargo test`, Windows
 | A | mechanism in the real window: reading paper.md / long.md, PageDown / End / Home, click + Ctrl+E, an empty document; a light system by flipping `AppsUseLightTheme` | reading is the one page in Paper Dark; PageDown → Section 9, End → 112–120, Home → 1; Write / Read switch; 103 + 4 tests | the table surface came from gpui-base's own theme (`tokens.colors.surface`), which followed the registry flip while gpui-kit's theme did not: white rows on dark paper → the table refinement now sets the paper as its background; the empty-document hint was appended after a full-height TextView and sat on the bottom edge → it replaces the page |
 | B | the same window checks after the fixes, plus the fixed Paper theme on the page (`SMEP_CONFIG_DIR` with `preview_theme = "paper"`) and the split | hint at the top left; table rows on the paper in both; Paper page `#f8f7f3` with cinnabar links, framed code, header rule; split editor dark with cinnabar headings; 103 + 4 | none |
 | C | static consistency: stale words and types (`Edit button`, `Edit / Read`, `keepane`, `Option<Palette>`, the removed `scroll_handle`), README line 1, clippy `--all-targets` | one stale "Edit button" in the README status line → fixed; clippy clean; 103 + 4 | one |
-| D | CI (`__CI__`) | | |
+| 1 (clean) | the editor's selection in the window (click, Ctrl+E, Ctrl+A on paper.md, split): a translucent cinnabar wash, text legible, so the opaque `selection.background` is right; reproducibility: the suite twice more, 103 + 4 both times, 0 failed | clean | none |
+| 2 (clean) | code correctness, reading the committed diff: focus and state on each switch (reading pane focus on entering reading, editor or block focus on leaving; `scroll_sync` untouched by reading; `follow_editor` only attached while an editor is on screen), the hint only while reading an empty document, modified keys passed through | clean | none |
+| 3 (clean) | CI run __CI__ | | none |
 
 ## Left
 
 - The look that needs gpui-base: a serif face or a colour for headings, the h2 fading rule, the h3 square mark, the quote's 「, inline code with a border, the bold wash and emphasis dots under Chinese text. A fork with a few more `TextViewStyle` hooks, then a PR upstream.
 - gpui-base's own theme and gpui-kit's read the system appearance separately; on this machine flipping `AppsUseLightTheme` moved only the former. The table was the one place the renderer drew from it; the scrollbar inside the page still does.
-- The selection colour in the editor is the theme's `selection.background` (opaque cinnabar in the file, the editor applies its own alpha); not checked in the window this round.

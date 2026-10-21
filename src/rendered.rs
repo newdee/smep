@@ -431,7 +431,9 @@ impl Render for RenderedView {
             .track_focus(&self.focus_handle)
             .bg(background)
             .text_color(foreground)
-            .when_some(palette.font_family(), |this, family| this.font_family(family))
+            .when_some(palette.font_family(), |this, family| {
+                this.font_family(family)
+            })
             .px_6()
             .py_4()
             .gap_3()
