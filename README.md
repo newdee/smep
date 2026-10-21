@@ -139,9 +139,17 @@ File, "Open Markdown Files with smep" does what the system allows:
   `smep.app` (the Homebrew cask or a GitHub release; a `cargo install` or
   formula binary has no bundle, so Finder cannot pick it, and the menu item
   says so). Files opened from Finder land in the running window. The app
-  is Developer ID signed but not yet notarized, so the first open from
-  Finder needs System Settings, Privacy & Security, Open Anyway (older
-  systems: right-click, Open).
+  is Developer ID signed but not yet notarized, so a downloaded copy goes
+  through Gatekeeper once:
+  1. Move `smep.app` into `/Applications` (the cask does this).
+  2. Open it; when macOS refuses, allow it under System Settings, Privacy
+     & Security, Open Anyway (older systems: right-click, Open). That is
+     a one-time pass for this copy of the app.
+  3. Pick File, "Open Markdown Files with smep", or in Finder select a
+     `.md` file, Get Info, Open With, smep, Change All.
+  The association is kept by bundle id and survives updates; each newly
+  downloaded version needs step 2 again until the app is notarized
+  (`brew install --cask --no-quarantine` skips it).
 - **Windows**: smep registers itself (current user, no admin) and opens the
   Settings page for it, where you choose smep next to `.md` once; Windows
   keeps that choice to itself. `scripts\register-windows.ps1` does the same
