@@ -12,8 +12,9 @@ place, block by block.
 
 ## Status
 
-`0.1.5` is the sixth release: on Windows it now opens without a terminal
-window. It wears the Paper look (keepane's paper and paper-dark, light or
+`0.1.6` is the seventh release: it opens reading, and Ctrl+E / Cmd+E or the
+Edit button in the title bar brings the editor. On Windows it opens without
+a terminal window. It wears the Paper look (keepane's paper and paper-dark, light or
 dark with the system) and can make itself the default app for Markdown
 from the File menu, on top of importing PDF, Word, HTML
 and text files as Markdown, exporting the document as a PDF or an HTML
