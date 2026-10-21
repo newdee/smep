@@ -163,8 +163,14 @@ pub struct Smep {
     /// Focus for the window when no editor is shown (rendered mode), so the
     /// shortcuts bound on the root keep working.
     focus_handle: FocusHandle,
+    /// Focus of the reading pane: the keys scroll the document from here.
+    reading_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How far an arrow key scrolls the document being read; a page is the
+/// viewport less this.
+const LINE_STEP: Pixels = px(40.);
 
 fn preview_state(
     format: PreviewFormat,
@@ -315,22 +321,30 @@ impl Smep {
             scroll_sync: None,
             insert_menu: None,
             focus_handle: cx.focus_handle(),
+            reading_focus: cx.focus_handle(),
             settings,
             editing: false,
             _subscriptions: subscriptions,
         };
         this.schedule_block_table(window, cx);
         this.refresh_title(window);
-        // Reading mode: the rendered view, read-only, holds the focus so
-        // the root's shortcuts work.
+        // Reading mode: the reading pane holds the focus so the root's
+        // shortcuts and the scrolling keys work.
         this.rendered
             .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
-        this.rendered
-            .read(cx)
-            .focus_handle()
-            .clone()
-            .focus(window, cx);
+        this.reading_focus.focus(window, cx);
         this
+    }
+
+    #[cfg(test)]
+    pub fn reading_focus(&self) -> &FocusHandle {
+        &self.reading_focus
+    }
+
+    /// The preview's list, which the keys scroll while reading.
+    #[cfg(test)]
+    pub fn reading_list(&self, cx: &App) -> ListState {
+        self.preview.read(cx).list_state().clone()
     }
 
     #[cfg(test)]
@@ -339,7 +353,8 @@ impl Smep {
     }
 
     /// What the window shows: the chosen view mode while editing, the
-    /// rendered document while reading.
+    /// rendered document while reading (as one page, the split view's
+    /// preview; the block view is for editing).
     pub fn layout(&self) -> ViewMode {
         if self.editing {
             self.settings.view_mode
@@ -359,13 +374,37 @@ impl Smep {
         }
         self.editing = false;
         self.insert_menu = None;
+        // An edit in progress in a block ends; the view is not shown again
+        // until editing resumes.
         self.rendered
             .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
-        self.rendered
-            .read(cx)
-            .focus_handle()
-            .clone()
-            .focus(window, cx);
+        self.reading_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Keys scroll the document being read: a line, a page, the ends.
+    /// Modified keys are shortcuts and pass.
+    fn on_reading_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.alt || modifiers.platform {
+            return;
+        }
+        let list = self.preview.read(cx).list_state().clone();
+        let page = (list.viewport_bounds().size.height - LINE_STEP).max(LINE_STEP);
+        match (keystroke.key.as_str(), modifiers.shift) {
+            ("down", false) => list.scroll_by(LINE_STEP),
+            ("up", false) => list.scroll_by(-LINE_STEP),
+            ("pagedown", false) | ("space", false) => list.scroll_by(page),
+            ("pageup", false) | ("space", true) => list.scroll_by(-page),
+            ("home", false) => list.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            }),
+            ("end", false) => list.scroll_to_end(),
+            _ => return,
+        }
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -589,7 +628,7 @@ impl Smep {
         let menu_bar = self.menu_bar_shown().then(|| self.render_menu_bar(cx));
         // The one switch between reading and editing that needs no key.
         let mode_button = Button::new("edit-toggle")
-            .label(if self.editing { "Read" } else { "Edit" })
+            .label(if self.editing { "Read" } else { "Write" })
             .ghost()
             .xsmall()
             .tab_stop(false)
@@ -1153,6 +1192,9 @@ impl Smep {
     /// no block is being edited (the source editor is not on screen then,
     /// and an action sent through its focus handle would go nowhere).
     fn menu_focus(&self, cx: &App) -> FocusHandle {
+        if !self.editing {
+            return self.reading_focus.clone();
+        }
         match self.active_editor(cx) {
             ActiveEditor::Source(_) if self.layout() == ViewMode::Rendered => {
                 self.rendered.read(cx).focus_handle().clone()
@@ -1393,18 +1435,24 @@ impl Render for Smep {
                 let _ = this.update(cx, |this, cx| this.sync_preview_scroll(cx));
             }
         };
-        let palette = self.preview_theme().palette();
-        let background = palette.map_or(cx.theme().background, |p| p.background);
-        let foreground = palette.map_or(cx.theme().foreground, |p| p.foreground);
+        let palette = self.preview_theme().resolve(cx.theme());
+        let style = palette.text_view_style(cx.theme().font_size);
+        let editing = self.editing;
+        // Reading an empty document: a hint in place of the (empty) page.
+        let hint = (!editing && self.previewed.trim().is_empty()).then(|| {
+            div()
+                .text_color(palette.muted)
+                .child("Nothing to read yet. Write (the button in the title bar) to start.")
+        });
+        // The one rendering of the whole document: the split view's preview
+        // while editing, the page being read otherwise.
         let preview = div()
             .id("preview")
             .size_full()
             .overflow_hidden()
-            .bg(background)
-            .text_color(foreground)
-            .when_some(palette.and_then(|p| p.font_family()), |this, family| {
-                this.font_family(family)
-            })
+            .bg(palette.background)
+            .text_color(palette.foreground)
+            .when_some(palette.font_family(), |this, family| this.font_family(family))
             .px_6()
             .py_4()
             .on_mouse_down(
@@ -1413,12 +1461,15 @@ impl Render for Smep {
                     this.open_theme_menu(event.position, window, cx);
                 }),
             )
-            .on_prepaint(follow_editor)
-            .child(
-                TextView::new(&self.preview)
+            // Only an editor on screen has a top line to follow.
+            .when(editing, |this| this.on_prepaint(follow_editor))
+            .child(match hint {
+                Some(hint) => hint.into_any_element(),
+                None => TextView::new(&self.preview)
                     .scrollable(true)
-                    .when_some(palette, |view, p| view.style(p.text_view_style())),
-            );
+                    .style(style)
+                    .into_any_element(),
+            });
 
         // Right-click: the editor moves the cursor to the click, then hands
         // over here while it is still borrowed, so the menu opens one step
@@ -1451,29 +1502,43 @@ impl Render for Smep {
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
 
-        let content = match self.layout() {
-            ViewMode::Source => editor.into_any_element(),
-            ViewMode::Rendered => {
-                self.rendered
-                    .update(cx, |rendered, cx| rendered.set_palette(palette, cx));
-                // Right-click picks the theme here as on the split preview
-                // (an open block keeps its own menu and stops the event).
-                div()
-                    .id("rendered-pane")
-                    .size_full()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.open_theme_menu(event.position, window, cx);
-                        }),
-                    )
-                    .child(self.rendered.clone())
-                    .into_any_element()
+        let content = if !editing {
+            // Reading: the document as one page, scrolled by the keys from
+            // the pane (or from the text inside it, which takes the focus
+            // for selection).
+            div()
+                .id("reading")
+                .size_full()
+                .track_focus(&self.reading_focus)
+                .on_key_down(cx.listener(Self::on_reading_key))
+                .child(preview)
+                .into_any_element()
+        } else {
+            match self.layout() {
+                ViewMode::Source => editor.into_any_element(),
+                ViewMode::Rendered => {
+                    self.rendered
+                        .update(cx, |rendered, cx| rendered.set_palette(palette, cx));
+                    // Right-click picks the theme here as on the split
+                    // preview (an open block keeps its own menu and stops
+                    // the event).
+                    div()
+                        .id("rendered-pane")
+                        .size_full()
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                this.open_theme_menu(event.position, window, cx);
+                            }),
+                        )
+                        .child(self.rendered.clone())
+                        .into_any_element()
+                }
+                ViewMode::Split => h_resizable("smep-split")
+                    .child(resizable_panel().child(editor.into_any_element()))
+                    .child(resizable_panel().child(preview.into_any_element()))
+                    .into_any_element(),
             }
-            ViewMode::Split => h_resizable("smep-split")
-                .child(resizable_panel().child(editor.into_any_element()))
-                .child(resizable_panel().child(preview.into_any_element()))
-                .into_any_element(),
         };
 
         let drop_highlight = cx.theme().ring;
@@ -1917,8 +1982,8 @@ mod tests {
         assert_eq!(reading(cx), (true, ViewMode::Rendered, true));
         assert_eq!(cx.read(|cx| smep.read(cx).view_mode()), ViewMode::Split);
         assert!(
-            cx.update(|window, cx| rendered.read(cx).focus_handle().is_focused(window)),
-            "the rendered view holds the focus while reading"
+            cx.update(|window, cx| smep.read(cx).reading_focus().is_focused(window)),
+            "the reading pane holds the focus while reading"
         );
 
         // A click on a block does nothing while reading.
@@ -1945,6 +2010,10 @@ mod tests {
         draw(cx);
         assert_eq!(reading(cx), (true, ViewMode::Rendered, true));
         assert!(cx.read(|cx| rendered.read(cx).active_editor()).is_none());
+        assert!(
+            cx.update(|window, cx| smep.read(cx).reading_focus().is_focused(window)),
+            "back to reading, the pane takes the focus again"
+        );
 
         // A view-mode key while reading means editing in that mode.
         cx.simulate_keystrokes(&primary("1"));
@@ -1969,8 +2038,10 @@ mod tests {
         draw(cx);
         let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
 
-        // Reading an .html file: the whole page is one block, rendered as
-        // HTML, not Markdown's reading of the tags (which would be several).
+        // Editing an .html file in the rendered view: the whole page is one
+        // block, rendered as HTML, not Markdown's reading of the tags (which
+        // would be several). (Reading shows the preview, which is HTML too.)
+        rendered_mode(&smep, cx);
         assert_eq!(
             cx.read(|cx| rendered.read(cx).format()),
             PreviewFormat::Html
@@ -2021,7 +2092,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn keys_scroll_the_rendered_view_while_reading(cx: &mut TestAppContext) {
+    fn keys_scroll_the_document_while_reading(cx: &mut TestAppContext) {
         let text: String = (1..=200).map(|n| format!("Paragraph {n}\n\n")).collect();
         let document = Document {
             path: None,
@@ -2031,19 +2102,16 @@ mod tests {
         };
         let (smep, cx) = open_reading(cx, document, Settings::default());
         draw(cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
-        let scroll =
-            |cx: &VisualTestContext| cx.read(|cx| rendered.read(cx).scroll_handle().clone());
+        // Reading shows the one preview of the whole document, as one list
+        // item per block; the keys move its scroll offset (negative = down).
+        let list = cx.read(|cx| smep.read(cx).reading_list(cx));
+        assert_eq!(list.item_count(), 200, "one item per paragraph");
         let offset = |cx: &mut VisualTestContext| {
             draw(cx);
-            f32::from(scroll(cx).offset().y)
+            f32::from(list.scroll_px_offset_for_scrollbar().y)
         };
-        let viewport = f32::from(scroll(cx).bounds().size.height);
-        let max = f32::from(scroll(cx).max_offset().y);
-        assert!(
-            max > 2. * viewport,
-            "the document must overflow: {max} vs {viewport}"
-        );
+        let viewport = f32::from(list.viewport_bounds().size.height);
+        assert!(viewport > 100., "the pane is laid out: {viewport}");
         assert_eq!(offset(cx), 0.);
 
         cx.simulate_keystrokes("pagedown");
@@ -2056,26 +2124,34 @@ mod tests {
         cx.simulate_keystrokes("down down up");
         assert_eq!(offset(cx), -40.);
         cx.simulate_keystrokes("end");
-        assert_eq!(offset(cx), -max);
+        let end = offset(cx);
+        assert!(end < 2. * after_page, "the end is far down: {end}");
         cx.simulate_keystrokes("pagedown");
-        assert_eq!(offset(cx), -max, "clamped at the end");
+        assert_eq!(offset(cx), end, "stays at the end");
+        cx.simulate_keystrokes("up");
+        assert_eq!(offset(cx), end + 40., "and comes back up a line from it");
         cx.simulate_keystrokes("home");
         assert_eq!(offset(cx), 0.);
         cx.simulate_keystrokes("up");
         assert_eq!(offset(cx), 0., "clamped at the top");
 
-        // A block editor keeps its keys: Space types a space, the view stays.
+        // Ctrl+E is a shortcut, not a scroll: editing starts, the preview in
+        // the split keeps its place.
+        cx.simulate_keystrokes(&primary("e"));
+        cx.run_until_parked();
+        assert!(cx.read(|cx| smep.read(cx).is_editing()));
+
+        // A block editor keeps its keys: Space types a space.
         rendered_mode(&smep, cx);
         activate_block(&smep, 0..11, cx);
         let block = active_block(&smep, cx);
         cx.simulate_keystrokes("space end");
         cx.run_until_parked();
         assert_eq!(value(&block, cx), "Paragraph 1 ");
-        assert_eq!(offset(cx), 0.);
     }
 
     #[gpui_kit::test]
-    fn right_click_on_the_rendered_view_opens_the_theme_menu(cx: &mut TestAppContext) {
+    fn right_click_on_the_document_being_read_opens_the_theme_menu(cx: &mut TestAppContext) {
         let document = Document {
             path: None,
             text: "# T\n\npara".into(),

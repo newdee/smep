@@ -18,9 +18,10 @@ window) together with the `smep` command. Reading mode scrolls from the
 keyboard and renders `.html` files as pages, `smep notes.md` opens a new
 document when the file is not there yet, and the Windows "Open Markdown
 Files with smep" no longer flashes a console. It opens reading, and Ctrl+E
-/ Cmd+E or the Edit button in the title bar brings the editor. On Windows
-it opens without a terminal window. It wears the Paper look (keepane's paper and paper-dark, light or
-dark with the system) and can make itself the default app for Markdown
+/ Cmd+E or the Write button in the title bar brings the editor. On Windows
+it opens without a terminal window. It wears the Paper look (warm white or
+near-black paper, grey inks, cinnabar, light or dark with the system) and
+can make itself the default app for Markdown
 from the File menu, on top of importing PDF, Word, HTML
 and text files as Markdown, exporting the document as a PDF or an HTML
 page, the frameless window with its view modes, in-place editing in the
@@ -44,10 +45,11 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   Solarized Light/Dark, or the application's own look): right-click the
   preview or the rendered document. The choice is remembered in
   `settings.toml` under the platform config directory.
-- Opens reading: the document rendered, nothing to click into by accident,
-  and the keyboard scrolls it (Page Up / Page Down, Space, Home / End, the
-  arrows). The Edit button in the title bar (or Ctrl+E) brings the editor
-  in the view mode you last used; Read (or Ctrl+E again) puts it away.
+- Opens reading: the document rendered as one page, nothing to click into
+  by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
+  Home / End, the arrows). The Write button in the title bar (or Ctrl+E)
+  brings the editor in the view mode you last used; Read (or Ctrl+E again)
+  puts it away.
 - Markdown highlighting in the editor from the same parser the preview uses.
 - The preview follows the editor: whatever block is at the top of the editor
   is at the top of the preview.
@@ -63,9 +65,12 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - Export as PDF (typeset by [Typst](https://typst.app), built in: headings,
   lists, tables, code, quotes, footnotes, local images; CJK text uses the
   system's fonts) or as a standalone HTML page, under File.
-- Ink on paper: the application wears keepane's Paper look, light or dark
-  with the system (warm cream or warm near-black, Vitesse hues, cinnabar
-  for the cursor and headings).
+- Ink on paper: the application wears the Paper look of
+  [dfine-blog](https://github.com/newdee/dfine-blog), light or dark with
+  the system (warm white or near-black paper, grey inks, cinnabar for the
+  cursor, headings and links), and the rendered document is typeset the
+  way the blog is: its heading scale, paragraph gap, framed code blocks
+  and tables ruled across only, whichever preview theme colours it.
 - One static binary, no web view, no Electron.
 
 ## Keys
@@ -77,7 +82,7 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Save | Ctrl+S | Cmd+S |
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
 | Export as PDF | Ctrl+Shift+E | Cmd+Shift+E |
-| Edit, or back to reading | Ctrl+E (or the Edit / Read button) | Cmd+E (or the button) |
+| Write, or back to reading | Ctrl+E (or the Write / Read button) | Cmd+E (or the button) |
 | Scroll the rendered document | Page Up / Page Down, Space / Shift+Space, Home / End, ↑ / ↓ | same |
 | Source / Split / Rendered view (starts editing) | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |
 | Show or hide the menu bar | Ctrl+Shift+M | Cmd+Shift+M |

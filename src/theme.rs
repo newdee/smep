@@ -1,18 +1,20 @@
 //! How smep looks.
 //!
 //! The application itself (editor, title bar, menus) is drawn in Paper:
-//! ink on paper, light or dark with the system, the same two looks as
-//! keepane's `paper` and `paper-dark` themes (warm cream or warm near-black,
-//! Vitesse hues, one accent, cinnabar). They are gpui-kit theme configs in
-//! `assets/themes/paper.json`, installed by [`install`].
+//! ink on paper, light or dark with the system, the look of dfine-blog's
+//! "墨色编辑部" (warm white or near-black paper, grey inks, one accent,
+//! cinnabar). They are gpui-kit theme configs in `assets/themes/paper.json`,
+//! installed by [`install`].
 //!
 //! The rendered Markdown can wear a look of its own, a [`PreviewTheme`];
-//! by default it follows the application.
+//! by default it follows the application. Whatever the colours, the type is
+//! the blog's: its heading scale, paragraph gap, code frame and table rules
+//! ([`Palette::text_view_style`]).
 
 use gpui_kit::App;
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::component::{Theme, ThemeRegistry};
-use gpui_kit::{HighlightStyle, Hsla, rgb};
+use gpui_kit::{HighlightStyle, Hsla, Pixels, StyleRefinement, Styled as _, px, rems, rgb};
 use serde::{Deserialize, Serialize};
 
 /// The two application themes, in gpui-kit's JSON theme format.
@@ -72,7 +74,7 @@ pub const ALL: [PreviewTheme; 9] = [
     PreviewTheme::SolarizedDark,
 ];
 
-/// The colours and type of one fixed theme.
+/// The colours and type of one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub background: Hsla,
@@ -84,6 +86,12 @@ pub struct Palette {
     pub serif: bool,
     pub dark: bool,
 }
+
+/// The blog's heading scale, as a factor of the body size: h1 to h6.
+const HEADING_SCALE: [f32; 6] = [1.62, 1.46, 1.2, 1.02, 0.92, 0.92];
+
+/// The blog's gap between paragraphs, in rems of the body size.
+const PARAGRAPH_GAP: f32 = 0.95;
 
 impl PreviewTheme {
     pub fn label(self) -> &'static str {
@@ -105,26 +113,27 @@ impl PreviewTheme {
         let hex = |value: u32| -> Hsla { rgb(value).into() };
         Some(match self {
             Self::System => return None,
-            // keepane's paper: ink #33302a on cream #f0e7d2, the bar's
-            // darker edge for code, warm grey inks, blue links.
+            // The blog's light paper: ink #1a1a18 on #f8f7f3, soft ink for
+            // quotes, cinnabar links, the code surface a shade down.
             Self::Paper => Palette {
-                background: hex(0xf0e7d2),
-                foreground: hex(0x33302a),
-                muted: hex(0x635b4e),
-                link: hex(0x035fa0),
-                code_background: hex(0xe3d8bf),
-                border: hex(0xd3c8ad),
+                background: hex(0xf8f7f3),
+                foreground: hex(0x1a1a18),
+                muted: hex(0x5d5b55),
+                link: hex(0xc3423f),
+                code_background: hex(0xf4f2ee),
+                border: hex(0xe4e1da),
                 serif: false,
                 dark: false,
             },
-            // keepane's paper-dark: ink #cecabe on warm near-black #171716.
+            // The blog's dark paper: ink #c1bfba on #121212, a brighter
+            // cinnabar so links clear AA.
             Self::PaperDark => Palette {
-                background: hex(0x171716),
-                foreground: hex(0xcecabe),
-                muted: hex(0x87837b),
-                link: hex(0x4f95cf),
-                code_background: hex(0x242423),
-                border: hex(0x2c2c2a),
+                background: hex(0x121212),
+                foreground: hex(0xc1bfba),
+                muted: hex(0xa5a29a),
+                link: hex(0xdd625e),
+                code_background: hex(0x191918),
+                border: hex(0x2b2a28),
                 serif: false,
                 dark: true,
             },
@@ -190,11 +199,33 @@ impl PreviewTheme {
             },
         })
     }
+
+    /// The palette to draw with: the fixed one, or the application's own
+    /// colours for the theme that follows it.
+    pub fn resolve(self, theme: &Theme) -> Palette {
+        self.palette().unwrap_or_else(|| Palette::from_app(theme))
+    }
 }
 
 impl Palette {
-    /// The rich-text style for this palette.
-    pub fn text_view_style(&self) -> TextViewStyle {
+    /// The application theme's colours as a palette, so the preview that
+    /// follows the application is styled the same way as a fixed theme.
+    pub fn from_app(theme: &Theme) -> Self {
+        Self {
+            background: theme.background,
+            foreground: theme.foreground,
+            muted: theme.muted_foreground,
+            link: theme.link,
+            code_background: theme.accent,
+            border: theme.border,
+            serif: false,
+            dark: theme.mode.is_dark(),
+        }
+    }
+
+    /// The rich-text style for this palette, for text of `body` size: the
+    /// colours, and the blog's type on top of them.
+    pub fn text_view_style(&self, body: Pixels) -> TextViewStyle {
         let mut selection = self.link;
         selection.a = 0.3;
         TextViewStyle::default()
@@ -209,6 +240,32 @@ impl Palette {
                 color: Some(self.foreground),
                 ..Default::default()
             })
+            .with_paragraph_gap(rems(PARAGRAPH_GAP))
+            .with_heading_base_font_size(body)
+            .with_heading_font_size(|level, base| base * heading_scale(level))
+            // A fenced block sits in a thin frame with rounded corners.
+            .with_code_block(
+                StyleRefinement::default()
+                    .border_1()
+                    .border_color(self.border)
+                    .rounded(px(8.)),
+            )
+            // Tables rule across only: no frame, no column lines, a heavier
+            // rule under the header row instead of a filled one. The table's
+            // own surface is the paper (the renderer's default is its own
+            // theme's, which does not follow a fixed preview theme).
+            .with_table(
+                StyleRefinement::default()
+                    .border_0()
+                    .bg(self.background),
+            )
+            .with_table_cell(StyleRefinement::default().border_r_0())
+            .with_table_head(
+                StyleRefinement::default()
+                    .bg(gpui_kit::transparent_black())
+                    .border_b_2()
+                    .border_color(self.muted),
+            )
             .with_dark(self.dark)
     }
 
@@ -223,6 +280,11 @@ impl Palette {
             "Georgia"
         })
     }
+}
+
+/// The size of a heading of `level` as a factor of the body size.
+fn heading_scale(level: u8) -> f32 {
+    HEADING_SCALE[usize::from(level.clamp(1, 6)) - 1]
 }
 
 #[cfg(test)]
@@ -274,6 +336,41 @@ mod tests {
     }
 
     #[test]
+    fn the_type_is_the_blogs_whatever_the_colours() {
+        for theme in ALL {
+            let Some(palette) = theme.palette() else {
+                continue;
+            };
+            let style = palette.text_view_style(px(16.));
+            assert_eq!(style.paragraph_gap(), rems(0.95), "{theme:?}");
+            assert_eq!(style.heading_base_font_size(), px(16.));
+            assert_eq!(style.heading_font_size(1), Some(px(16.) * 1.62), "{theme:?}");
+            assert_eq!(style.heading_font_size(2), Some(px(16.) * 1.46));
+            assert_eq!(style.heading_font_size(3), Some(px(16.) * 1.2));
+            assert_eq!(style.heading_font_size(6), Some(px(16.) * 0.92));
+            assert_eq!(style.heading_font_size(9), Some(px(16.) * 0.92), "out of range");
+            assert_eq!(style.code_block().border_widths.top, Some(px(1.).into()));
+            assert_eq!(style.code_block().corner_radii.top_left, Some(px(8.).into()));
+            assert_eq!(style.table_cell().border_widths.right, Some(px(0.).into()));
+            assert_eq!(
+                style.table().background,
+                Some(gpui_kit::Fill::Color(palette.background.into())),
+                "{theme:?}: the table surface is the paper"
+            );
+            assert_eq!(style.table_head().border_widths.bottom, Some(px(2.).into()));
+            assert_eq!(style.foreground(), palette.foreground);
+            assert_eq!(style.link(), palette.link);
+            assert_eq!(style.is_dark(), palette.dark);
+        }
+        // A bigger body scales the headings with it.
+        let style = PreviewTheme::Paper
+            .palette()
+            .unwrap()
+            .text_view_style(px(20.));
+        assert_eq!(style.heading_font_size(1), Some(px(20.) * 1.62));
+    }
+
+    #[test]
     fn the_bundled_theme_file_parses_with_both_looks() {
         let set: gpui_kit::component::ThemeSet = serde_json::from_str(PAPER_THEMES).unwrap();
         let names: Vec<&str> = set.themes.iter().map(|t| t.name.as_ref()).collect();
@@ -309,19 +406,32 @@ mod tests {
             gpui_kit::init(cx);
             install(cx);
             Theme::change(ThemeMode::Light, None, cx);
-            assert_eq!(cx.theme().background, hex(0xf0e7d2));
-            assert_eq!(cx.theme().foreground, hex(0x33302a));
-            assert_eq!(cx.theme().title_bar, hex(0xe3d8bf));
-            assert_eq!(cx.theme().caret, hex(0xa53736), "the cursor is cinnabar");
+            assert_eq!(cx.theme().background, hex(0xf8f7f3));
+            assert_eq!(cx.theme().foreground, hex(0x1a1a18));
+            assert_eq!(cx.theme().title_bar, hex(0xf1efeb));
+            assert_eq!(cx.theme().caret, hex(0xc3423f), "the cursor is cinnabar");
             let heading = cx.theme().highlight_theme.style("title").unwrap();
-            assert_eq!(heading.color, Some(hex(0xa53736)));
+            assert_eq!(heading.color, Some(hex(0xc3423f)));
+            // The preview that follows the application is the Paper palette.
+            assert_eq!(
+                Palette::from_app(cx.theme()),
+                PreviewTheme::Paper.palette().unwrap()
+            );
+            assert_eq!(
+                PreviewTheme::System.resolve(cx.theme()),
+                PreviewTheme::Paper.palette().unwrap()
+            );
 
             Theme::change(ThemeMode::Dark, None, cx);
-            assert_eq!(cx.theme().background, hex(0x171716));
-            assert_eq!(cx.theme().foreground, hex(0xcecabe));
-            assert_eq!(cx.theme().title_bar, hex(0x121212));
+            assert_eq!(cx.theme().background, hex(0x121212));
+            assert_eq!(cx.theme().foreground, hex(0xc1bfba));
+            assert_eq!(cx.theme().title_bar, hex(0x171716));
             let heading = cx.theme().highlight_theme.style("title").unwrap();
             assert_eq!(heading.color, Some(hex(0xdd625e)));
+            assert_eq!(
+                PreviewTheme::System.resolve(cx.theme()),
+                PreviewTheme::PaperDark.palette().unwrap()
+            );
         });
     }
 

@@ -52,8 +52,9 @@ pub struct RenderedView {
     /// blocks in place from the block's text alone.
     blocks: Vec<Range<usize>>,
     blocks_text: SharedString,
-    palette: Option<Palette>,
-    /// Reading mode: blocks are shown, never opened for editing.
+    palette: Palette,
+    /// Read-only: blocks are shown, never opened for editing (the state
+    /// reading mode leaves the view in; the document is read in the preview).
     read_only: bool,
     focus_handle: FocusHandle,
     scroll: ScrollHandle,
@@ -92,7 +93,7 @@ impl RenderedView {
             active: None,
             blocks: Vec::new(),
             blocks_text: SharedString::default(),
-            palette: None,
+            palette: Palette::from_app(cx.theme()),
             read_only: false,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -105,7 +106,7 @@ impl RenderedView {
         self.active.as_ref().map(|active| active.editor.clone())
     }
 
-    pub fn set_palette(&mut self, palette: Option<Palette>, cx: &mut Context<Self>) {
+    pub fn set_palette(&mut self, palette: Palette, cx: &mut Context<Self>) {
         if self.palette != palette {
             self.palette = palette;
             cx.notify();
@@ -124,11 +125,6 @@ impl RenderedView {
     #[cfg(test)]
     pub fn format(&self) -> PreviewFormat {
         self.format
-    }
-
-    #[cfg(test)]
-    pub fn scroll_handle(&self) -> &ScrollHandle {
-        &self.scroll
     }
 
     /// Show the document as Markdown or as HTML. A change ends any edit in
@@ -384,9 +380,9 @@ impl Render for RenderedView {
         let text = self.blocks_text.clone();
         let active = self.active_range();
         let palette = self.palette;
-        let background = palette.map_or(cx.theme().background, |p| p.background);
-        let foreground = palette.map_or(cx.theme().foreground, |p| p.foreground);
-        let muted = cx.theme().muted_foreground;
+        let background = palette.background;
+        let foreground = palette.foreground;
+        let muted = palette.muted;
 
         // The editor takes the place of the blocks its text parses into,
         // and sits between its neighbours even while its text is empty.
@@ -414,7 +410,7 @@ impl Render for RenderedView {
         }
         if items.is_empty() {
             let hint = if self.read_only {
-                "Nothing to read yet. Edit (the button in the title bar) to start writing."
+                "Nothing to read yet. Write (the button in the title bar) to start."
             } else {
                 "Click here to start writing."
             };
@@ -435,9 +431,7 @@ impl Render for RenderedView {
             .track_focus(&self.focus_handle)
             .bg(background)
             .text_color(foreground)
-            .when_some(palette.and_then(|p| p.font_family()), |this, family| {
-                this.font_family(family)
-            })
+            .when_some(palette.font_family(), |this, family| this.font_family(family))
             .px_6()
             .py_4()
             .gap_3()
@@ -467,10 +461,11 @@ impl RenderedView {
         ix: usize,
         range: Range<usize>,
         text: &str,
-        palette: Option<Palette>,
+        palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let source: SharedString = text[range.clone()].to_string().into();
+        let style = palette.text_view_style(cx.theme().font_size);
         div()
             .id(("block", ix))
             .w_full()
@@ -492,7 +487,7 @@ impl RenderedView {
                     PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
                     PreviewFormat::Html => TextView::html(("block-text", ix), source),
                 }
-                .when_some(palette, |view, p| view.style(p.text_view_style())),
+                .style(style),
             )
             .into_any_element()
     }

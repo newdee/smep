@@ -112,7 +112,7 @@ pub fn native_menus() -> Vec<Menu> {
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action("Edit / Read", ToggleEditing),
+                MenuItem::action("Write / Read", ToggleEditing),
                 MenuItem::separator(),
                 MenuItem::action("Source", ViewSource),
                 MenuItem::action("Split", ViewSplit),
