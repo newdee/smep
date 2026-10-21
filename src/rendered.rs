@@ -11,9 +11,13 @@ use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::app::PreviewFormat;
 use crate::highlight;
 use crate::insert;
 use crate::theme::Palette;
+
+/// How far an arrow key scrolls the view; a page is the viewport less this.
+const LINE_STEP: Pixels = px(40.);
 
 /// What the rendered view tells its owner.
 pub enum RenderedEvent {
@@ -38,6 +42,9 @@ struct ActiveBlock {
 pub struct RenderedView {
     /// The document. Shared with the source view.
     source: Entity<EditorState>,
+    /// Markdown is shown block by block; an HTML document is one block,
+    /// rendered as HTML (its "blocks" would be Markdown's reading of it).
+    format: PreviewFormat,
     active: Option<ActiveBlock>,
     /// The top-level blocks of `blocks_text`. A whole-document parse costs
     /// as much as the preview's, so it runs only when the text changed in a
@@ -56,7 +63,12 @@ pub struct RenderedView {
 impl EventEmitter<RenderedEvent> for RenderedView {}
 
 impl RenderedView {
-    pub fn new(source: Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        source: Entity<EditorState>,
+        format: PreviewFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subscriptions = vec![
             cx.observe(&source, |_, _, cx| cx.notify()),
             // The active block stands for a range of the document; a change
@@ -76,6 +88,7 @@ impl RenderedView {
         ];
         Self {
             source,
+            format,
             active: None,
             blocks: Vec::new(),
             blocks_text: SharedString::default(),
@@ -108,6 +121,35 @@ impl RenderedView {
         self.read_only
     }
 
+    #[cfg(test)]
+    pub fn format(&self) -> PreviewFormat {
+        self.format
+    }
+
+    #[cfg(test)]
+    pub fn scroll_handle(&self) -> &ScrollHandle {
+        &self.scroll
+    }
+
+    /// Show the document as Markdown or as HTML. A change ends any edit in
+    /// progress (the blocks are about to be different) and re-reads them.
+    pub fn set_format(
+        &mut self,
+        format: PreviewFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.format == format {
+            return;
+        }
+        self.deactivate(window, cx);
+        self.format = format;
+        let text = self.text(cx);
+        self.blocks = self.parse_blocks(&text);
+        self.blocks_text = text;
+        cx.notify();
+    }
+
     /// Reading mode on or off. Turning it on ends any edit in progress.
     pub fn set_read_only(&mut self, read_only: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only == read_only {
@@ -129,10 +171,22 @@ impl RenderedView {
     fn blocks(&mut self, cx: &App) -> &[Range<usize>] {
         let text = self.text(cx);
         if self.blocks_text != text {
-            self.blocks = highlight::block_ranges(&text);
+            self.blocks = self.parse_blocks(&text);
             self.blocks_text = text;
         }
         &self.blocks
+    }
+
+    /// The blocks of `text` in this view's format: Markdown's top-level
+    /// blocks, or the whole of an HTML document as one.
+    fn parse_blocks(&self, text: &str) -> Vec<Range<usize>> {
+        match self.format {
+            PreviewFormat::Markdown => highlight::block_ranges(text),
+            PreviewFormat::Html => {
+                let end = text.trim_end_matches(['\r', '\n']).len();
+                (end > 0).then_some(0..end).into_iter().collect()
+            }
+        }
     }
 
     /// The blocks for tests to check against a fresh parse.
@@ -267,7 +321,8 @@ impl RenderedView {
         // the next whole-document parse, on the edit ending, settles that.
         let growth = text.len() as isize - range.len() as isize;
         let moved = |offset: usize| (offset as isize + growth) as usize;
-        let inside = highlight::block_ranges(&typed)
+        let inside = self
+            .parse_blocks(&typed)
             .into_iter()
             .map(|block| block.start + start..block.end + start);
         let before = self
@@ -282,6 +337,44 @@ impl RenderedView {
             .map(|block| moved(block.start)..moved(block.end));
         self.blocks = before.chain(inside).chain(after).collect();
         self.blocks_text = self.text(cx);
+    }
+
+    /// Keyboard scrolling while no block is being typed in (reading, or the
+    /// focus on the view or on a block's rendered text): arrows by a line,
+    /// Page keys and Space by a page, Home and End to the ends. The key
+    /// reaches here only with the focus inside the view; a block editor
+    /// keeps its own keys.
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let typing = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.editor.focus_handle(cx).contains_focused(window, cx));
+        if typing {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.alt || modifiers.platform {
+            return;
+        }
+        let page = (self.scroll.bounds().size.height - LINE_STEP).max(LINE_STEP);
+        let max = self.scroll.max_offset().y;
+        let current = self.scroll.offset().y;
+        // Offsets grow negative as the view scrolls down.
+        let target = match (keystroke.key.as_str(), modifiers.shift) {
+            ("down", false) => current - LINE_STEP,
+            ("up", false) => current + LINE_STEP,
+            ("pagedown", false) | ("space", false) => current - page,
+            ("pageup", false) | ("space", true) => current + page,
+            ("home", false) => px(0.),
+            ("end", false) => -max,
+            _ => return,
+        };
+        let offset = self.scroll.offset();
+        self.scroll
+            .set_offset(point(offset.x, target.clamp(-max, px(0.))));
+        cx.stop_propagation();
+        cx.notify();
     }
 }
 
@@ -351,12 +444,17 @@ impl Render for RenderedView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    if this.read_only {
+                        // Nothing to open; the click gives the view the focus.
+                        return;
+                    }
                     this.activate_at_end(window, cx);
                     // A focusable element takes focus on click after its own
                     // listeners; that would take it back from the new block.
                     window.prevent_default();
                 }),
             )
+            .on_key_down(cx.listener(Self::on_key_down))
             // The block editor lets a plain Escape through; it ends the edit.
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.deactivate(window, cx)))
             .children(items)
@@ -380,13 +478,21 @@ impl RenderedView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
+                    if this.read_only {
+                        // Let the click reach the view, which takes the
+                        // focus from it (so the scrolling keys work).
+                        return;
+                    }
                     cx.stop_propagation();
                     this.activate(range.clone(), window, cx);
                 }),
             )
             .child(
-                TextView::markdown(("block-text", ix), source)
-                    .when_some(palette, |view, p| view.style(p.text_view_style())),
+                match self.format {
+                    PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
+                    PreviewFormat::Html => TextView::html(("block-text", ix), source),
+                }
+                .when_some(palette, |view, p| view.style(p.text_view_style())),
             )
             .into_any_element()
     }
@@ -395,10 +501,13 @@ impl RenderedView {
         let Some(active) = self.active.as_ref() else {
             return div().into_any_element();
         };
+        // Clicks on the block are the block's: a left one must not start a
+        // new block at the end, a right one opens the editor's own menu.
         div()
             .id("active-block")
             .w_full()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(
                 Textarea::new(&active.editor)
                     .bordered(false)

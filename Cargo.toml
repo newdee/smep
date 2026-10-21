@@ -41,8 +41,9 @@ typst-pdf = { version = "0.15", optional = true }
 # on macOS (both already in the dependency tree through gpui).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-# AttachConsole, so a GUI-subsystem smep.exe still prints --version in a terminal.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+# AttachConsole, so a GUI-subsystem smep.exe still prints --version in a
+# terminal; CREATE_NO_WINDOW, so the cmd it runs for Settings shows no console.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

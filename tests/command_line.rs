@@ -25,9 +25,13 @@ fn help_prints_the_usage() {
     assert!(text.contains("--version"), "{text}");
 }
 
+/// A file that is not there yet opens as a new document (no window here, so
+/// the test uses a directory that is not there either, which is an error).
 #[test]
 fn an_unreadable_file_is_reported_on_stderr() {
-    let missing = std::env::temp_dir().join(format!("smep-missing-{}.md", std::process::id()));
+    let missing = std::env::temp_dir()
+        .join(format!("smep-missing-dir-{}", std::process::id()))
+        .join("notes.md");
     let output = Command::new(SMEP).arg(&missing).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let text = String::from_utf8_lossy(&output.stderr);

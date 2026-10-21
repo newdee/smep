@@ -115,12 +115,19 @@ mod platform {
     }
 
     pub fn make_default(exe: &Path) -> Result<Outcome> {
+        use std::os::windows::process::CommandExt as _;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
         register(&RegKey::predef(HKEY_CURRENT_USER), exe)
             .context("could not write smep's registration to the registry")?;
         // Windows keeps the default itself; this opens the page for smep.
+        // smep is a GUI program without a console, so cmd would get a
+        // console window of its own and flash it; CREATE_NO_WINDOW keeps
+        // it hidden.
         let settings = format!("ms-settings:defaultapps?registeredAppUser={APP}");
         let opened = Command::new("cmd")
             .args(["/C", "start", "", &settings])
+            .creation_flags(CREATE_NO_WINDOW)
             .status()
             .map(|status| status.success())
             .unwrap_or(false);

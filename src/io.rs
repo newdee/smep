@@ -39,6 +39,25 @@ impl Document {
         })
     }
 
+    /// Open `path` from the command line: read it, or, when there is no such
+    /// file yet in a directory that exists, start an empty document that
+    /// saves there (`smep notes.md` before notes.md exists). A missing
+    /// directory is still an error, since nothing could be saved.
+    pub fn open(path: PathBuf) -> io::Result<Self> {
+        match Self::read(path.clone()) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound && parent_exists(&path) => {
+                let format = PreviewFormat::for_path(&path);
+                Ok(Self {
+                    path: Some(path),
+                    text: String::new(),
+                    format,
+                    origin: None,
+                })
+            }
+            read => read,
+        }
+    }
+
     /// Convert the file at `path` (a PDF, a Word file, text) into a new,
     /// unsaved Markdown document.
     pub fn import(path: PathBuf, format: crate::convert::Format) -> anyhow::Result<Self> {
@@ -56,6 +75,15 @@ impl Document {
         path.and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string())
+    }
+}
+
+/// Whether the directory `path` sits in exists (a bare file name is in the
+/// current one).
+fn parent_exists(path: &Path) -> bool {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.is_dir(),
+        _ => true,
     }
 }
 
@@ -149,6 +177,33 @@ mod tests {
                 Some(PathBuf::from("C:/docs/a.md"))
             );
         }
+    }
+
+    #[test]
+    fn open_starts_a_new_document_for_a_missing_file_in_an_existing_directory() {
+        let dir = std::env::temp_dir().join(format!("smep-io-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let fresh = dir.join("new.html");
+        let doc = Document::open(fresh.clone()).unwrap();
+        assert_eq!(doc.path, Some(fresh.clone()));
+        assert_eq!(doc.text, "");
+        assert_eq!(
+            doc.format,
+            PreviewFormat::Html,
+            "the name decides the format"
+        );
+        assert!(doc.origin.is_none());
+        assert!(!fresh.exists(), "nothing is written until the first save");
+
+        // An existing file reads as before.
+        std::fs::write(dir.join("old.md"), "kept").unwrap();
+        assert_eq!(Document::open(dir.join("old.md")).unwrap().text, "kept");
+
+        // A missing directory is an error: there would be nowhere to save.
+        let err = Document::open(dir.join("no-such-dir").join("x.md")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

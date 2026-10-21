@@ -36,8 +36,9 @@ const USAGE: &str = "\
 Usage: smep [FILE]
 
 A Simple Markdown Editor & Previewer. Opens FILE (Markdown or HTML), or an
-empty document. A PDF, Word (.docx) or text FILE is converted to a new,
-unsaved Markdown document.
+empty document; a FILE that does not exist yet is a new document that saves
+there. A PDF, Word (.docx) or text FILE is converted to a new, unsaved
+Markdown document.
 
 Options:
   -h, --help     Print this help and exit
@@ -98,7 +99,7 @@ fn main() {
         Some(path) => {
             let read = match convert::Format::for_import(&path) {
                 Some(format) => Document::import(path.clone(), format),
-                None => Document::read(path.clone()).map_err(anyhow::Error::from),
+                None => Document::open(path.clone()).map_err(anyhow::Error::from),
             };
             match read {
                 Ok(document) => document,

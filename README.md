@@ -37,11 +37,12 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   click the `+` beside one, click below the end of the text, or right-click.
 - Preview themes (Paper and Paper Dark, GitHub, Newsprint, Night, Sepia,
   Solarized Light/Dark, or the application's own look): right-click the
-  preview. The choice is remembered in `settings.toml` under the platform
-  config directory.
-- Opens reading: the document rendered, nothing to click into by accident.
-  The Edit button in the title bar (or Ctrl+E) brings the editor in the
-  view mode you last used; Read (or Ctrl+E again) puts it away.
+  preview or the rendered document. The choice is remembered in
+  `settings.toml` under the platform config directory.
+- Opens reading: the document rendered, nothing to click into by accident,
+  and the keyboard scrolls it (Page Up / Page Down, Space, Home / End, the
+  arrows). The Edit button in the title bar (or Ctrl+E) brings the editor
+  in the view mode you last used; Read (or Ctrl+E again) puts it away.
 - Markdown highlighting in the editor from the same parser the preview uses.
 - The preview follows the editor: whatever block is at the top of the editor
   is at the top of the preview.
@@ -72,6 +73,7 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Save as | Ctrl+Shift+S | Cmd+Shift+S |
 | Export as PDF | Ctrl+Shift+E | Cmd+Shift+E |
 | Edit, or back to reading | Ctrl+E (or the Edit / Read button) | Cmd+E (or the button) |
+| Scroll the rendered document | Page Up / Page Down, Space / Shift+Space, Home / End, ↑ / ↓ | same |
 | Source / Split / Rendered view (starts editing) | Ctrl+1 / 2 / 3 | Cmd+1 / 2 / 3 |
 | Show or hide the menu bar | Ctrl+Shift+M | Cmd+Shift+M |
 | Full screen | F11 | Ctrl+Cmd+F |
@@ -79,7 +81,7 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Edit a block in the rendered view | click it | click it |
 | Finish editing a block | Escape (or click elsewhere) | Escape (or click elsewhere) |
 | Block menu / clipboard | right-click the editor | right-click the editor |
-| Preview theme | right-click the preview | right-click the preview |
+| Preview theme | right-click the preview or the rendered document | same |
 | Find in editor | Ctrl+F | Cmd+F |
 | Find and replace | Ctrl+H | Cmd+Shift+F |
 | Document start / end | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |
@@ -91,7 +93,8 @@ cargo install smep
 smep notes.md
 ```
 
-On a Mac, Homebrew works too:
+A file that does not exist yet opens as a new document and is written there
+on the first save. On a Mac, Homebrew works too:
 
 ```sh
 brew install newdee/tap/smep

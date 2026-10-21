@@ -232,7 +232,7 @@ impl Smep {
             state.focus(window, cx);
         });
         let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
-        let rendered = cx.new(|cx| RenderedView::new(editor.clone(), window, cx));
+        let rendered = cx.new(|cx| RenderedView::new(editor.clone(), document.format, window, cx));
 
         let subscriptions = vec![
             cx.subscribe_in(
@@ -651,15 +651,17 @@ impl Smep {
         cx.notify();
     }
 
-    /// Point the preview at the current source in `format`, right away. The
-    /// block table follows a moment later; until then the scroll sync goes
-    /// by proportion.
+    /// Point the preview and the rendered view at the current source in
+    /// `format`, right away. The block table follows a moment later; until
+    /// then the scroll sync goes by proportion.
     fn set_preview(&mut self, format: PreviewFormat, window: &mut Window, cx: &mut Context<Self>) {
         self.preview_refresh = None;
         let text = self.source.clone();
         if format != self.format {
             self.format = format;
             self.preview = cx.new(|cx| preview_state(format, &text, cx));
+            self.rendered
+                .update(cx, |rendered, cx| rendered.set_format(format, window, cx));
         }
         self.show_preview(text, Vec::new(), cx);
         self.schedule_block_table(window, cx);
@@ -1454,7 +1456,19 @@ impl Render for Smep {
             ViewMode::Rendered => {
                 self.rendered
                     .update(cx, |rendered, cx| rendered.set_palette(palette, cx));
-                self.rendered.clone().into_any_element()
+                // Right-click picks the theme here as on the split preview
+                // (an open block keeps its own menu and stops the event).
+                div()
+                    .id("rendered-pane")
+                    .size_full()
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.open_theme_menu(event.position, window, cx);
+                        }),
+                    )
+                    .child(self.rendered.clone())
+                    .into_any_element()
             }
             ViewMode::Split => h_resizable("smep-split")
                 .child(resizable_panel().child(editor.into_any_element()))
@@ -1941,6 +1955,169 @@ mod tests {
         let saved = std::fs::read_to_string(dir.path("settings.toml")).unwrap();
         assert!(saved.contains("view_mode = \"source\""), "{saved}");
         assert!(!saved.contains("editing"), "{saved}");
+    }
+
+    #[gpui_kit::test]
+    fn an_html_document_is_one_html_block_in_the_rendered_view(cx: &mut TestAppContext) {
+        let dir = TempDir::new("html-rendered");
+        let page = dir.path("page.html");
+        let html = "<h1>Title</h1>\n<p>Some <b>bold</b> text.</p>\n\n<ul><li>one</li></ul>\n";
+        std::fs::write(&page, html).unwrap();
+        let document = Document::read(page.clone()).unwrap();
+        let settings = Settings::default();
+        let (smep, cx) = open_reading(cx, document, settings);
+        draw(cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+
+        // Reading an .html file: the whole page is one block, rendered as
+        // HTML, not Markdown's reading of the tags (which would be several).
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).format()),
+            PreviewFormat::Html
+        );
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).block_ranges()),
+            vec![0..html.trim_end().len()]
+        );
+        assert!(
+            crate::highlight::block_ranges(html).len() > 1,
+            "Markdown would split it"
+        );
+
+        // Opening a Markdown document switches the view back to blocks.
+        let notes = dir.path("notes.md");
+        std::fs::write(&notes, "# T\n\npara\n").unwrap();
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.load_path(notes.clone(), window, cx))
+        });
+        draw(cx);
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).format()),
+            PreviewFormat::Markdown
+        );
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).block_ranges()),
+            vec![0..3, 5..9]
+        );
+
+        // Save As to .html while a block is open: the edit ends, one block again.
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 5..9, cx);
+        let saved =
+            cx.update(|window, cx| smep.update(cx, |this, cx| this.save_as_task(window, cx)));
+        let target = dir.path("notes.html");
+        cx.simulate_new_path_selection({
+            let target = target.clone();
+            move |_| Some(target)
+        });
+        cx.run_until_parked();
+        assert!(cx.read(|cx| rendered.read(cx).active_editor()).is_none());
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).format()),
+            PreviewFormat::Html
+        );
+        assert_eq!(cx.read(|cx| rendered.read(cx).block_ranges()), vec![0..9]);
+        drop(saved);
+    }
+
+    #[gpui_kit::test]
+    fn keys_scroll_the_rendered_view_while_reading(cx: &mut TestAppContext) {
+        let text: String = (1..=200).map(|n| format!("Paragraph {n}\n\n")).collect();
+        let document = Document {
+            path: None,
+            text,
+            format: PreviewFormat::Markdown,
+            origin: None,
+        };
+        let (smep, cx) = open_reading(cx, document, Settings::default());
+        draw(cx);
+        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let scroll =
+            |cx: &VisualTestContext| cx.read(|cx| rendered.read(cx).scroll_handle().clone());
+        let offset = |cx: &mut VisualTestContext| {
+            draw(cx);
+            f32::from(scroll(cx).offset().y)
+        };
+        let viewport = f32::from(scroll(cx).bounds().size.height);
+        let max = f32::from(scroll(cx).max_offset().y);
+        assert!(
+            max > 2. * viewport,
+            "the document must overflow: {max} vs {viewport}"
+        );
+        assert_eq!(offset(cx), 0.);
+
+        cx.simulate_keystrokes("pagedown");
+        let after_page = offset(cx);
+        assert_eq!(after_page, -(viewport - 40.), "a page less a line");
+        cx.simulate_keystrokes("space");
+        assert_eq!(offset(cx), 2. * after_page);
+        cx.simulate_keystrokes("shift-space pageup");
+        assert_eq!(offset(cx), 0.);
+        cx.simulate_keystrokes("down down up");
+        assert_eq!(offset(cx), -40.);
+        cx.simulate_keystrokes("end");
+        assert_eq!(offset(cx), -max);
+        cx.simulate_keystrokes("pagedown");
+        assert_eq!(offset(cx), -max, "clamped at the end");
+        cx.simulate_keystrokes("home");
+        assert_eq!(offset(cx), 0.);
+        cx.simulate_keystrokes("up");
+        assert_eq!(offset(cx), 0., "clamped at the top");
+
+        // A block editor keeps its keys: Space types a space, the view stays.
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 0..11, cx);
+        let block = active_block(&smep, cx);
+        cx.simulate_keystrokes("space end");
+        cx.run_until_parked();
+        assert_eq!(value(&block, cx), "Paragraph 1 ");
+        assert_eq!(offset(cx), 0.);
+    }
+
+    #[gpui_kit::test]
+    fn right_click_on_the_rendered_view_opens_the_theme_menu(cx: &mut TestAppContext) {
+        let document = Document {
+            path: None,
+            text: "# T\n\npara".into(),
+            format: PreviewFormat::Markdown,
+            origin: None,
+        };
+        // Reading, as smep opens: the one place a right-click reaches a theme.
+        let (smep, cx) = open_reading(cx, document, Settings::default());
+        draw(cx);
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).preview_theme()),
+            PreviewTheme::System
+        );
+
+        mouse_down(cx, MouseButton::Right, 300., 300.);
+        assert!(
+            menu_open(&smep, cx),
+            "the theme menu opens over the document"
+        );
+        draw(cx);
+        // As on the split preview: the first `down` is System, the second Paper.
+        cx.simulate_keystrokes("down down enter");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).preview_theme()),
+            PreviewTheme::Paper
+        );
+        assert!(!menu_open(&smep, cx));
+
+        // Over an open block the right-click is the block editor's own.
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 5..9, cx);
+        let block = active_block(&smep, cx);
+        draw(cx);
+        let bounds = cx.read(|cx| block.read(cx).input_bounds());
+        mouse_down(
+            cx,
+            MouseButton::Right,
+            f32::from(bounds.left()) + 4.,
+            f32::from(bounds.top()) + 4.,
+        );
+        assert!(!menu_open(&smep, cx), "no theme menu over the block");
     }
 
     fn rendered_mode(smep: &Entity<Smep>, cx: &mut VisualTestContext) {
