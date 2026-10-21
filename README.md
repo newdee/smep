@@ -12,7 +12,10 @@ place, block by block.
 
 ## Status
 
-`0.1.6` is the seventh release: it opens reading, and Ctrl+E / Cmd+E or the
+`0.1.7` is the eighth release: reading mode scrolls from the keyboard and
+renders `.html` files as pages, `smep notes.md` opens a new document when
+the file is not there yet, and the Windows "Open Markdown Files with smep"
+no longer flashes a console. It opens reading, and Ctrl+E / Cmd+E or the
 Edit button in the title bar brings the editor. On Windows it opens without
 a terminal window. It wears the Paper look (keepane's paper and paper-dark, light or
 dark with the system) and can make itself the default app for Markdown
