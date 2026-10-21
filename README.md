@@ -12,16 +12,19 @@ place, block by block.
 
 ## Status
 
-`0.1.8` is the ninth release: on a Mac, `brew install --cask newdee/tap/smep`
-installs `smep.app` (Finder, Spotlight, the Dock, "Open With", no Terminal
-window) together with the `smep` command. Reading mode scrolls from the
-keyboard and renders `.html` files as pages, `smep notes.md` opens a new
-document when the file is not there yet, and the Windows "Open Markdown
-Files with smep" no longer flashes a console. It opens reading, and Ctrl+E
-/ Cmd+E or the Write button in the title bar brings the editor. On Windows
-it opens without a terminal window. It wears the Paper look (warm white or
-near-black paper, grey inks, cinnabar, light or dark with the system) and
-can make itself the default app for Markdown
+`0.1.9` is the tenth release: the Paper look is now dfine-blog's (warm
+white or near-black paper, grey inks, cinnabar), the rendered document is
+typeset the blog's way in every preview theme, reading mode shows the
+document as one page (footnotes and selections work across blocks), and
+the title bar's toggle is Write / Read, no longer a second "Edit". On a
+Mac, `brew install --cask newdee/tap/smep` installs `smep.app` (Finder,
+Spotlight, the Dock, "Open With", no Terminal window) together with the
+`smep` command. Reading mode scrolls from the keyboard and renders `.html`
+files as pages, `smep notes.md` opens a new document when the file is not
+there yet, and the Windows "Open Markdown Files with smep" no longer
+flashes a console. It opens reading, and Ctrl+E / Cmd+E or the Write
+button in the title bar brings the editor. On Windows it opens without a
+terminal window, and it can make itself the default app for Markdown
 from the File menu, on top of importing PDF, Word, HTML
 and text files as Markdown, exporting the document as a PDF or an HTML
 page, the frameless window with its view modes, in-place editing in the
