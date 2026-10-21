@@ -62,4 +62,6 @@ Round 2 result: 0 findings.
 
 ## Round 3 — platforms (CI)
 
-(filled in after the push)
+Run 39544178420 for `592d5ee`, all three jobs green: ubuntu 5 m 19 s, windows 9 m 28 s, macos 16 m 24 s. Tests: windows 102 + 4, ubuntu 102 + 3, macos 100 + 3 (the two Windows-only unit tests and the PE-subsystem test account for the differences), 0 failed. The Windows job builds the `CREATE_NO_WINDOW` path and runs the new missing-directory CLI test.
+
+Round 3 result: 0 findings.
