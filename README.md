@@ -97,21 +97,30 @@ smep notes.md
 ```
 
 A file that does not exist yet opens as a new document and is written there
-on the first save. On a Mac, Homebrew works too:
+on the first save. On a Mac, Homebrew installs the application:
 
 ```sh
-brew install newdee/tap/smep
+brew install --cask newdee/tap/smep
 ```
 
-The formula installs the `smep` command from the release's own universal
-build and follows new releases by itself. (No Linux formula: that binary
-needs the system's X11, xkbcommon, Wayland and Vulkan libraries, which a
-Homebrew prefix does not provide; use `cargo install` or the release
-tarball there.) `smep --version` and `smep --help` print and exit without
-opening a window. On Windows smep is a GUI program: no terminal window
-comes up with it, and in a terminal it still prints. PowerShell neither
-waits for a GUI program nor captures its output, so a script there asks
-through `cmd /c smep --version` (or `Start-Process -Wait
+The cask puts `smep.app` in `/Applications` (Finder, Spotlight, the Dock,
+"Open With", the default app for `.md`) and links its binary as the `smep`
+command; both follow new releases by themselves. The app is Developer ID
+signed but not yet notarized, so the first start from Finder is refused
+once: allow it under System Settings, Privacy & Security, Open Anyway, or
+install with `brew install --cask --no-quarantine newdee/tap/smep`.
+
+A bare binary (`cargo install`, the formula `brew install newdee/tap/smep`,
+the release tarball) is a command-line tool to macOS: Finder, Spotlight
+and "Open With" run it inside a Terminal window, and only an application
+can claim `.md` files. Take the cask or the release's `smep.app` for that.
+(No Linux formula: that binary needs the system's X11, xkbcommon, Wayland
+and Vulkan libraries, which a Homebrew prefix does not provide; use `cargo
+install` or the release tarball there.) `smep --version` and `smep --help`
+print and exit without opening a window. On Windows smep is a GUI program:
+no terminal window comes up with it, and in a terminal it still prints.
+PowerShell neither waits for a GUI program nor captures its output, so a
+script there asks through `cmd /c smep --version` (or `Start-Process -Wait
 -RedirectStandardOutput`).
 
 Building from source needs a Rust toolchain and, on Linux, a few system
@@ -124,12 +133,13 @@ and reports the missing feature if asked for it.
 
 File, "Open Markdown Files with smep" does what the system allows:
 
-- **macOS**: smep claims Markdown files outright, when it runs as the
-  `smep.app` from a GitHub release (a `cargo install` or Homebrew binary has
-  no bundle, so Finder cannot pick it; the menu item says so). Files opened
-  from Finder land in the running window. The app is Developer ID signed
-  but not yet notarized, so the first open from Finder needs right-click,
-  Open (or System Settings, Privacy & Security, Open Anyway).
+- **macOS**: smep claims Markdown files outright, when it runs as
+  `smep.app` (the Homebrew cask or a GitHub release; a `cargo install` or
+  formula binary has no bundle, so Finder cannot pick it, and the menu item
+  says so). Files opened from Finder land in the running window. The app
+  is Developer ID signed but not yet notarized, so the first open from
+  Finder needs System Settings, Privacy & Security, Open Anyway (older
+  systems: right-click, Open).
 - **Windows**: smep registers itself (current user, no admin) and opens the
   Settings page for it, where you choose smep next to `.md` once; Windows
   keeps that choice to itself. `scripts\register-windows.ps1` does the same

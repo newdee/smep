@@ -74,15 +74,18 @@ release with a Linux tarball, a Windows zip and a universal macOS `smep.app`.
 Run it by hand for an existing tag with
 `gh workflow run release.yml -f tag=vX.Y.Z`.
 
-The Homebrew formula in [newdee/homebrew-tap](https://github.com/newdee/homebrew-tap)
-(`Formula/smep.rb`, macOS only) follows the latest published release on
-its own: a scheduled workflow there downloads
-`smep-vX.Y.Z-macos-universal.tar.gz` (the bare universal binary the
-release also ships next to the `.app` zip), installs and tests it on a
-macOS runner, and commits the bump only if that passes. To take a release
-at once instead of within six hours:
-`gh workflow run smep.yml --repo newdee/homebrew-tap`. The formula's test
-runs `smep --version`, which must print `smep X.Y.Z`.
+The Homebrew cask and formula in [newdee/homebrew-tap](https://github.com/newdee/homebrew-tap)
+(`Casks/smep.rb` installs `smep-vX.Y.Z-macos-universal.zip`, the `.app`,
+and links its binary as the command; `Formula/smep.rb` installs
+`smep-vX.Y.Z-macos-universal.tar.gz`, the bare universal binary the
+release ships next to the zip; macOS only) follow the latest published
+release on their own: a scheduled workflow there bumps both to the same
+version, installs and tests each on a macOS runner, and commits the bump
+only if that passes. To take a release at once instead of within six
+hours: `gh workflow run smep.yml --repo newdee/homebrew-tap`. Both tests
+run `smep --version`, which must print `smep X.Y.Z`. The cask exists
+because a bare binary is a command-line tool to macOS: Finder and "Open
+With" run it inside a Terminal window, and it cannot claim `.md` files.
 
 The macOS app is signed and notarized only when these repository secrets
 exist (they are the same six magpie uses). Without them it is ad-hoc signed

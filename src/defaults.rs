@@ -3,7 +3,8 @@
 //!
 //! - macOS lets an application claim a document type outright
 //!   (LaunchServices), but only an application bundle has the identity to
-//!   claim with: the `smep.app` from a release, not a bare binary.
+//!   claim with: `smep.app` (the Homebrew cask or a release), not a bare
+//!   binary.
 //! - Windows lets a program register itself and its file types, and keeps
 //!   the choice of a default for the user: smep registers, then opens the
 //!   Settings page where smep is one click away.
@@ -233,7 +234,7 @@ mod platform {
     pub fn make_default(exe: &Path) -> Result<Outcome> {
         let Some(bundle_id) = bundle_identifier() else {
             bail!(
-                "this smep ({}) runs outside an application bundle, and only an application can claim a file type; use the smep.app from a release (https://github.com/newdee/smep/releases)",
+                "this smep ({}) runs outside an application bundle, and only an application can claim a file type; install smep.app with `brew install --cask newdee/tap/smep` or from a release (https://github.com/newdee/smep/releases)",
                 exe.display()
             );
         };
