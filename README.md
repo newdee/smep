@@ -14,14 +14,17 @@ place, block by block.
 
 ## Status
 
-`0.1.11` is the twelfth release: the document is one design on screen,
-in the exported HTML page and in the PDF (a rule under h1 and h2, a
-framed table with a header row of ink on paper, framed code, and on the
-page and in print a washed quote and alternating rows), the stylesheet
-and the Typst preamble behind the exports are yours to edit
-(`smep --css`, `smep --typst`, then `export.css` / `export.typ` in the
-config directory), and a document's local images show in the preview.
-It is built on gpui-kit 0.8. Before that, smep got an icon (a cinnabar
+`0.1.12` is the thirteenth release: documents open in tabs (a file
+opened from the file manager, or `smep FILE`, while smep runs lands in a
+tab of the open window), an outline of the headings sits beside the
+document and a click goes to the section, and the document is set the
+way dfine-blog sets an article (code on a board with a cinnabar tab, a
+cinnabar top edge on dark paper, tables ruled across) on screen, in the
+exported page and in the PDF. Before that, 0.1.11 made the stylesheet
+and the Typst preamble behind the exports yours to edit (`smep --css`,
+`smep --typst`, then `export.css` / `export.typ` in the config
+directory) and showed a document's local images in the preview, on
+gpui-kit 0.8; and smep got an icon (a cinnabar
 seal with an M on paper) in the Windows executable, the macOS app and
 the Linux desktop entry. The Paper look is dfine-blog's (warm white or near-black
 paper, grey inks, cinnabar), the rendered document is typeset the blog's
