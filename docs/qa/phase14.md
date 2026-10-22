@@ -23,7 +23,7 @@ Each round = review from one perspective + the full suite (`cargo test`, Windows
 | E | the command line (`cmd /c`, the GUI binary): `--css`, `--css paper-dark`, `--typst sepia`, `--css nope`, `--help` | 38 / 25 lines, exit 2 with the eight names, help lists both flags; `tests/command_line.rs` covers them | none |
 | 1 (clean) | code: clippy `--all-targets` 0 warnings, `cargo fmt --check` 0 diffs; reproducibility: the suite 3× in a row, 112 + 4, 0 failed each time; `the_same_document_exports_to_the_same_bytes` holds with the preamble | clean | none |
 | 2 (clean) | the slim build, `cargo test --no-default-features`: 103 + 5, 0 failed; `tests/command_line.rs` on the default build: 5 passed | clean | none |
-| 3 (clean) | CI for the pushed commit | see the release log that follows, or `gh run list` | |
+| 3 (clean) | CI run 39731588052 for `e1db949`, the first build of gpui-pre 0.3.9 on the runners: ubuntu 16 m 30 s (112 + 4), macos 19 m 31 s (110 + 4), windows 31 m 18 s (112 + 5), 0 failed | clean | none |
 
 ## Left
 
