@@ -23,7 +23,7 @@ Each round = review from one perspective + the full suite (Windows), and for the
 | D | invariants, every entry point | 3 launches at once (real processes): 1 left, title `race3.md` | Save As onto a file another tab holds made two tabs of one file → refused with a report |
 | 1 (clean) | code: errors, resources, async by id (17 spots reviewed); `cargo fmt --check` 0 lines, clippy `--all-targets` 0 (default and slim) | 123 + 5, slim 114 + 5, 0 failed | none |
 | 2 (clean) | mechanism alive: 8 mutations, each must turn its test red — the left tab stays writable (M1), a blank tab is never reused (M2), the reading jump does not scroll (M3), the listener drops requests (M4), the dark board's edge in the border colour (M5), no code boards in HTML (M6), Cancel on close ignored (M7), Save As onto an open file allowed (M8); a silent caller with one listener thread (now fails in 3.02 s instead of hanging); the final binary on screen, second launch 60 ms | all 8 + 1 red, restored, green | none |
-| 3 | the other platforms: CI on ubuntu / macos / windows (the Unix socket path, the dead-socket test) | pending | |
+| 3 (clean) | the other platforms: CI run 39806454804 for `dd83a6f`: ubuntu 10 m 45 s (124 + 4, the Unix-only dead-socket test included), macos 20 m 43 s (122 + 4), windows 31 m 07 s (123 + 5), 0 failed | clean | none |
 
 Reproducibility (round C's suite, after its fixes): the suite 3 times in a row, 123 + 5 each; `smep --css` / `--typst` for 6 themes hashed twice, identical.
 
