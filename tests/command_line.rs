@@ -23,6 +23,42 @@ fn help_prints_the_usage() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.starts_with("Usage: smep [FILE]"), "{text}");
     assert!(text.contains("--version"), "{text}");
+    assert!(
+        text.contains("--css [THEME]") && text.contains("--typst [THEME]"),
+        "{text}"
+    );
+}
+
+/// `--css` and `--typst` print the look of a theme, Paper when none is
+/// named, and name the themes when the name is wrong.
+#[test]
+fn css_and_typst_print_the_look_of_a_theme() {
+    let output = Command::new(SMEP).arg("--css").output().unwrap();
+    assert!(output.status.success(), "{:?}", output.status);
+    let css = String::from_utf8_lossy(&output.stdout);
+    assert!(css.starts_with("/* smep: the Paper look."), "{css}");
+    assert!(css.contains("--paper:#f8f7f3"), "{css}");
+
+    let output = Command::new(SMEP)
+        .args(["--typst", "paper-dark"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.status);
+    let typst = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        typst.starts_with("// smep: the Paper Dark look."),
+        "{typst}"
+    );
+    assert!(typst.contains("#let paper = rgb(\"#121212\")"), "{typst}");
+
+    let output = Command::new(SMEP).args(["--css", "nope"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.starts_with("smep: no preview theme named \"nope\"; one of paper, paper-dark,"),
+        "{text}"
+    );
+    assert!(output.stdout.is_empty());
 }
 
 /// A file that is not there yet opens as a new document (no window here, so

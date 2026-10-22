@@ -35,7 +35,7 @@ use crate::keymap::{
     self, ExportHtml, ExportPdf, Import, MakeDefault, Open, Quit, Save, SaveAs, ToggleEditing,
     ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource, ViewSplit,
 };
-use crate::rendered::{RenderedEvent, RenderedView};
+use crate::rendered::{self, RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
 use crate::theme::{self, PreviewTheme};
 
@@ -777,6 +777,16 @@ impl Smep {
             .or_else(|| self.origin.as_deref().map(convert::markdown_path_for))
     }
 
+    /// The document's directory, where its relative images are looked up;
+    /// `None` for a document that has no place yet.
+    fn document_dir(&self) -> Option<PathBuf> {
+        self.named_path()
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
     fn refresh_title(&self, window: &mut Window) {
         window.set_window_title(&Self::title_for(
             self.named_path().as_deref(),
@@ -1054,12 +1064,11 @@ impl Smep {
     fn export_pdf(&mut self, _: &ExportPdf, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = self.ask_export_path("pdf", cx);
         let text = self.editor.read(cx).value();
-        let base = self
-            .named_path()
-            .as_deref()
-            .and_then(Path::parent)
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .map(Path::to_path_buf);
+        let base = self.document_dir();
+        // Print is ink on paper: the light theme of the preview's family,
+        // unless the user wrote a preamble of their own.
+        let preamble = export::user_preamble(self.settings.dir())
+            .unwrap_or_else(|| export::preamble(&self.preview_theme().print_palette()));
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = chosen.await else {
                 return;
@@ -1068,7 +1077,7 @@ impl Smep {
                 .background_spawn({
                     let path = path.clone();
                     async move {
-                        let pdf = export::to_pdf(&text, base.as_deref())?;
+                        let pdf = export::to_pdf(&text, base.as_deref(), &preamble)?;
                         std::fs::write(&path, pdf)?;
                         anyhow::Ok(())
                     }
@@ -1094,11 +1103,15 @@ impl Smep {
         let text = self.editor.read(cx).value();
         let title = export::first_heading(&text)
             .unwrap_or_else(|| Document::display_name(self.named_path().as_deref()));
+        // The page wears the preview's theme, dark or light, unless the
+        // user wrote a stylesheet of their own.
+        let stylesheet = export::user_stylesheet(self.settings.dir())
+            .unwrap_or_else(|| export::stylesheet(&self.preview_theme().resolve(cx.theme())));
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = chosen.await else {
                 return;
             };
-            if let Err(err) = std::fs::write(&path, export::to_html(&text, &title)) {
+            if let Err(err) = std::fs::write(&path, export::to_html(&text, &title, &stylesheet)) {
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.report(
                         &format!("Could not export {}", path.display()),
@@ -1437,6 +1450,7 @@ impl Render for Smep {
         };
         let palette = self.preview_theme().resolve(cx.theme());
         let style = palette.text_view_style(cx.theme().font_size);
+        let base = self.document_dir();
         let editing = self.editing;
         // Reading an empty document: a hint in place of the (empty) page.
         let hint = (!editing && self.previewed.trim().is_empty()).then(|| {
@@ -1470,6 +1484,7 @@ impl Render for Smep {
                 None => TextView::new(&self.preview)
                     .scrollable(true)
                     .style(style)
+                    .image_source(rendered::image_resolver(base.clone()))
                     .into_any_element(),
             });
 
@@ -1519,8 +1534,10 @@ impl Render for Smep {
             match self.layout() {
                 ViewMode::Source => editor.into_any_element(),
                 ViewMode::Rendered => {
-                    self.rendered
-                        .update(cx, |rendered, cx| rendered.set_palette(palette, cx));
+                    self.rendered.update(cx, |rendered, cx| {
+                        rendered.set_palette(palette, cx);
+                        rendered.set_base(base.clone(), cx);
+                    });
                     // Right-click picks the theme here as on the split
                     // preview (an open block keeps its own menu and stops
                     // the event).
@@ -2491,7 +2508,80 @@ mod tests {
         let html = std::fs::read_to_string(&html_path).expect("the HTML was written");
         assert!(html.contains("<title>Report</title>"));
         assert!(html.contains("<em>text</em>"));
+        // The page wears the preview's look (the theme that follows the
+        // application is Paper, light or dark).
+        assert!(html.contains("<style>\n/* smep: the Paper"), "{html}");
         assert!(!dirty(&smep, cx), "exporting is not saving");
+    }
+
+    #[cfg(all(feature = "pdf-export", feature = "pdf-import"))]
+    #[gpui_kit::test]
+    fn the_users_own_stylesheet_and_preamble_dress_the_exports(cx: &mut TestAppContext) {
+        use crate::keymap::ExportHtml;
+
+        // (Not "export-look": the export module's own test owns that name
+        // in the same temp directory, and the two run side by side.)
+        let dir = TempDir::new("own-look");
+        let config = dir.path("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join(crate::export::STYLESHEET_FILE),
+            "body{color:rebeccapurple}\n",
+        )
+        .unwrap();
+        // A preamble of the user's own: the page gets a header, which the
+        // text read back out of the PDF shows.
+        std::fs::write(
+            config.join(crate::export::PREAMBLE_FILE),
+            "#set page(paper: \"a4\", header: [OWN-PREAMBLE])\n#set text(size: 11pt)\n",
+        )
+        .unwrap();
+        let settings = Settings {
+            path: Some(config.join("settings.toml")),
+            ..Settings::default()
+        };
+        let path = dir.path("report.md");
+        std::fs::write(&path, "# Report\n\nBody.\n").unwrap();
+        let (smep, cx) = open_with(cx, Document::read(path.clone()).unwrap(), settings);
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        draw(cx);
+
+        cx.simulate_keystrokes(&primary("shift-e"));
+        let pdf_path = dir.path("own.pdf");
+        cx.simulate_new_path_selection({
+            let pdf_path = pdf_path.clone();
+            move |_| Some(pdf_path)
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.has_pending_prompt(),
+            "no error dialog: {:?}",
+            cx.pending_prompt()
+        );
+        let pdf = std::fs::read(&pdf_path).expect("the PDF was written");
+        let text = crate::convert::from_bytes(&pdf, crate::convert::Format::Pdf).unwrap();
+        assert!(text.contains("OWN-PREAMBLE"), "{text:?}");
+        assert!(text.contains("Report"), "{text:?}");
+
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.export_html(&ExportHtml, window, cx))
+        });
+        let html_path = dir.path("own.html");
+        cx.simulate_new_path_selection({
+            let html_path = html_path.clone();
+            move |_| Some(html_path)
+        });
+        cx.run_until_parked();
+        let html = std::fs::read_to_string(&html_path).expect("the HTML was written");
+        assert!(
+            html.contains("<style>\nbody{color:rebeccapurple}\n</style>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("/* smep:"),
+            "the built-in stylesheet is replaced, not layered"
+        );
     }
 
     #[gpui_kit::test]

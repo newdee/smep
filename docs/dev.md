@@ -116,6 +116,35 @@ test reads the text back out of the PDF it made. On Linux, CI installs
 `fonts-dejavu-core fonts-noto-cjk` for that; a bare box without any font
 cannot export.
 
+## The look
+
+One design, three outputs. `src/theme.rs` holds it as a `Palette` (six
+colours, serif or not) plus the type every palette shares: the heading
+scale (1.62 / 1.46 / 1.2 / 1.02 / 0.92 / 0.92 of the body), bold for the
+first level and semibold below, a 2 px rule of ink under h1 and a 1 px
+rule in the border colour under h2 (`heading_rule`), a 0.95 rem paragraph
+gap, code at 0.9 of the body in a framed block with 8 px corners, a framed
+table whose header row is ink on paper. From the palette:
+
+- the window: `Palette::text_view_style` builds gpui-base's
+  `TextViewStyle` (`with_heading`, `with_code_block`, `with_table*`). The
+  renderer has no hook for the quote's bar, the rule's thickness, list
+  markers or images, so those keep gpui-base's defaults on screen;
+- an HTML page: `export::stylesheet` writes the same design as CSS, plus
+  what only CSS can do here (the quote in the accent with a wash,
+  alternating table rows, centred images, a print stylesheet);
+- a PDF: `export::preamble` writes it as Typst `set` / `show` rules. The
+  markup `to_typst` emits carries no colour, stroke or size of its own
+  (a test checks), so the preamble is the whole look. A PDF takes the
+  light theme of the preview's family (`PreviewTheme::light`): print is
+  ink on paper.
+
+`smep --css [THEME]` and `smep --typst [THEME]` print the two; saved as
+`export.css` / `export.typ` in the config directory (`Settings::dir`,
+next to `settings.toml`) they replace the built-in ones for every export,
+whatever the theme. Tests never read the user's directory: a `Settings`
+without a path has no directory.
+
 ## Icon
 
 `assets/icon/logo.svg` is the design (a cinnabar seal with an M on the

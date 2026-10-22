@@ -41,8 +41,15 @@ there. A PDF, Word (.docx) or text FILE is converted to a new, unsaved
 Markdown document.
 
 Options:
-  -h, --help     Print this help and exit
-  -V, --version  Print the version and exit";
+  -h, --help       Print this help and exit
+  -V, --version    Print the version and exit
+  --css [THEME]    Print the stylesheet an exported HTML page carries
+  --typst [THEME]  Print the Typst preamble an exported PDF is typeset with
+
+THEME is a preview theme (paper, paper-dark, github, newsprint, night,
+sepia, solarized-light, solarized-dark); paper when left out. Saved as
+export.css or export.typ in smep's config directory, the printed text
+replaces the built-in one for every export.";
 
 /// A GUI-subsystem process gets no console of its own. When a terminal
 /// started smep, attach to the terminal's, so `--version`, `--help` and the
@@ -89,6 +96,31 @@ fn main() {
         }
         Some("-V" | "--version") => {
             let _ = writeln!(std::io::stdout(), "smep {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some(flag @ ("--css" | "--typst")) => {
+            let name = std::env::args()
+                .nth(2)
+                .unwrap_or_else(|| "paper".to_string());
+            let Some(palette) =
+                theme::PreviewTheme::parse(&name).and_then(theme::PreviewTheme::palette)
+            else {
+                eprintln!(
+                    "smep: no preview theme named {name:?}; one of {}",
+                    theme::ALL
+                        .iter()
+                        .filter_map(|theme| theme.palette().map(|_| theme.name()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                std::process::exit(2);
+            };
+            let text = if flag == "--css" {
+                export::stylesheet(&palette)
+            } else {
+                export::preamble(&palette)
+            };
+            let _ = write!(std::io::stdout(), "{text}");
             return;
         }
         _ => {}

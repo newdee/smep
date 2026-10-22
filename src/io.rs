@@ -112,6 +112,38 @@ pub fn path_from_file_url(url: &str) -> Option<PathBuf> {
     Some(PathBuf::from(decoded))
 }
 
+/// Where an image a document refers to is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageLocation {
+    /// A file on this machine.
+    File(PathBuf),
+    /// Anything else (a web address, a data URL, or a relative path of a
+    /// document that has no directory yet), left to the renderer.
+    Uri(String),
+}
+
+/// Where `url`, an image in a document kept in `base`, is: a relative path
+/// is next to the document (percent-encoded as a Markdown URL may be), a
+/// `file://` URL or an absolute path is that file, and a web or data URL
+/// stays what it is. Without a directory a relative path stays a URI.
+pub fn locate_image(base: Option<&Path>, url: &str) -> ImageLocation {
+    if url.starts_with("data:") || (url.contains("://") && !url.starts_with("file://")) {
+        return ImageLocation::Uri(url.to_string());
+    }
+    if let Some(path) = path_from_file_url(url) {
+        return ImageLocation::File(path);
+    }
+    let decoded = percent_decode(url).unwrap_or_else(|| url.to_string());
+    let path = Path::new(&decoded);
+    if path.is_absolute() {
+        return ImageLocation::File(path.to_path_buf());
+    }
+    match base {
+        Some(base) => ImageLocation::File(base.join(path)),
+        None => ImageLocation::Uri(url.to_string()),
+    }
+}
+
 fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -140,6 +172,70 @@ mod tests {
             Document::display_name(Some(Path::new("/tmp/notes/todo.md"))),
             "todo.md"
         );
+    }
+
+    #[test]
+    fn images_are_found_next_to_the_document() {
+        let base = Path::new("/docs/notes");
+        let file = |path: &str| ImageLocation::File(PathBuf::from(path));
+        assert_eq!(
+            locate_image(Some(base), "pics/a.png"),
+            file("/docs/notes/pics/a.png")
+        );
+        assert_eq!(
+            locate_image(Some(base), "my%20pic.png"),
+            file("/docs/notes/my pic.png"),
+            "a Markdown URL may be percent-encoded"
+        );
+        assert_eq!(
+            locate_image(Some(base), "../up.png"),
+            file("/docs/notes/../up.png")
+        );
+        #[cfg(not(windows))]
+        assert_eq!(locate_image(Some(base), "/abs/b.png"), file("/abs/b.png"));
+        #[cfg(not(windows))]
+        assert_eq!(
+            locate_image(Some(base), "file:///abs/c%20d.png"),
+            file("/abs/c d.png")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            locate_image(Some(base), "file:///C:/abs/c%20d.png"),
+            file(r"C:/abs/c d.png")
+        );
+        for uri in [
+            "https://x.y/z.png",
+            "http://x.y/z.png",
+            "data:image/png;base64,iVBORw0KGgo=",
+        ] {
+            assert_eq!(
+                locate_image(Some(base), uri),
+                ImageLocation::Uri(uri.to_string()),
+                "{uri}"
+            );
+        }
+        // A new document has no directory: a relative path cannot be found.
+        assert_eq!(
+            locate_image(None, "a.png"),
+            ImageLocation::Uri("a.png".to_string())
+        );
+        // Absolute is the platform's word: a leading slash alone is not
+        // absolute on Windows (no drive), where it is kept next to the
+        // document like any relative path.
+        #[cfg(not(windows))]
+        assert_eq!(locate_image(None, "/abs/b.png"), file("/abs/b.png"));
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                locate_image(Some(base), r"C:\pics\w.png"),
+                file(r"C:\pics\w.png")
+            );
+            assert_eq!(locate_image(None, r"C:\pics\w.png"), file(r"C:\pics\w.png"));
+            assert_eq!(
+                locate_image(None, "/abs/b.png"),
+                ImageLocation::Uri("/abs/b.png".to_string())
+            );
+        }
     }
 
     #[test]

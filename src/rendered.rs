@@ -4,6 +4,7 @@
 //! the main editor state; every keystroke in a block is written through to it.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use gpui_kit::base::text::TextView;
 use gpui_kit::component::input::{EditorState, Escape, InputEvent, Textarea, TextareaState};
@@ -14,7 +15,19 @@ use gpui_kit::*;
 use crate::app::PreviewFormat;
 use crate::highlight;
 use crate::insert;
+use crate::io::{self, ImageLocation};
 use crate::theme::Palette;
+
+/// How a rendering finds the document's images: a relative path is a file
+/// next to the document, in `base` (see [`io::locate_image`]).
+pub fn image_resolver(
+    base: Option<PathBuf>,
+) -> impl Fn(&SharedUri) -> ImageSource + Send + Sync + 'static {
+    move |url| match io::locate_image(base.as_deref(), url) {
+        ImageLocation::File(path) => ImageSource::Resource(Resource::Path(path.into())),
+        ImageLocation::Uri(uri) => ImageSource::Resource(Resource::Uri(uri.into())),
+    }
+}
 
 /// How far an arrow key scrolls the view; a page is the viewport less this.
 const LINE_STEP: Pixels = px(40.);
@@ -53,6 +66,8 @@ pub struct RenderedView {
     blocks: Vec<Range<usize>>,
     blocks_text: SharedString,
     palette: Palette,
+    /// The document's directory, where its relative images are.
+    base: Option<PathBuf>,
     /// Read-only: blocks are shown, never opened for editing (the state
     /// reading mode leaves the view in; the document is read in the preview).
     read_only: bool,
@@ -94,6 +109,7 @@ impl RenderedView {
             blocks: Vec::new(),
             blocks_text: SharedString::default(),
             palette: Palette::from_app(cx.theme()),
+            base: None,
             read_only: false,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -109,6 +125,14 @@ impl RenderedView {
     pub fn set_palette(&mut self, palette: Palette, cx: &mut Context<Self>) {
         if self.palette != palette {
             self.palette = palette;
+            cx.notify();
+        }
+    }
+
+    /// The document's directory, where its relative images are found.
+    pub fn set_base(&mut self, base: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.base != base {
+            self.base = base;
             cx.notify();
         }
     }
@@ -489,7 +513,8 @@ impl RenderedView {
                     PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
                     PreviewFormat::Html => TextView::html(("block-text", ix), source),
                 }
-                .style(style),
+                .style(style)
+                .image_source(image_resolver(self.base.clone())),
             )
             .into_any_element()
     }

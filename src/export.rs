@@ -1,11 +1,20 @@
 //! Export: the document as a PDF (typeset by Typst) or as an HTML page.
 //!
+//! Both wear the design of a [`Palette`]: the HTML page carries a
+//! stylesheet written from it ([`stylesheet`]), the PDF a Typst preamble
+//! ([`preamble`]). Either can be replaced by a file in the config
+//! directory, `export.css` or `export.typ` ([`user_stylesheet`],
+//! [`user_preamble`]); `smep --css` and `smep --typst` print the ones to
+//! start from.
+//!
 //! For PDF the Markdown syntax tree is rewritten as Typst markup, which
 //! Typst compiles with the fonts installed on the machine (none are
 //! embedded, so CJK text sets in a CJK face wherever one is installed and
 //! a machine without any font cannot export). The markup is plain text, so
 //! the rewrite is testable on its own and a compile failure names the
-//! construct that caused it.
+//! construct that caused it. The markup carries no look of its own: every
+//! `set` and `show` rule is in the preamble, which is what makes the
+//! preamble replaceable.
 
 // Without the `pdf-export` feature nothing compiles the markup, but the
 // writer stays (and stays tested): it is the part of this module that is
@@ -20,6 +29,13 @@ use markdown::ParseOptions;
 use markdown::mdast::{AlignKind, Node};
 
 use crate::convert::LineStart;
+use crate::theme::{self, CODE_SCALE, Palette, Rule};
+
+/// The user's own stylesheet for HTML pages, in the config directory.
+pub const STYLESHEET_FILE: &str = "export.css";
+
+/// The user's own Typst preamble for PDFs, in the config directory.
+pub const PREAMBLE_FILE: &str = "export.typ";
 
 /// Fonts to try, in order, for body text: the system faces of each
 /// platform, Latin first and CJK after. Typst takes the first installed one
@@ -55,8 +71,9 @@ const CODE_FONTS: &[&str] = &[
     "PingFang SC",
 ];
 
-/// The Markdown as Typst markup, ready to compile.
-pub fn to_typst(markdown: &str) -> String {
+/// The Markdown as Typst markup, ready to compile: `preamble` (see
+/// [`preamble`]), a blank line, the document.
+pub fn to_typst(markdown: &str, preamble: &str) -> String {
     let root = markdown::to_mdast(markdown, &ParseOptions::gfm()).unwrap_or(Node::Root(
         markdown::mdast::Root {
             children: Vec::new(),
@@ -69,21 +86,23 @@ pub fn to_typst(markdown: &str) -> String {
         footnotes: Vec::new(),
     };
     writer.collect(&root);
-    writer.preamble();
+    writer.out.push_str(preamble.trim_end());
+    writer.out.push_str("\n\n");
     writer.blocks(root.children().map(Vec::as_slice).unwrap_or(&[]), 0);
     writer.out
 }
 
-/// The Markdown typeset as a PDF. `base` is the document's directory, where
-/// relative image paths are looked up; without one images are left out.
+/// The Markdown typeset as a PDF with `preamble`. `base` is the document's
+/// directory, where relative image paths are looked up; without one images
+/// are left out.
 #[cfg(feature = "pdf-export")]
-pub fn to_pdf(markdown: &str, base: Option<&Path>) -> Result<Vec<u8>> {
+pub fn to_pdf(markdown: &str, base: Option<&Path>, preamble: &str) -> Result<Vec<u8>> {
     use anyhow::anyhow;
     use typst_as_lib::TypstEngine;
     use typst_as_lib::typst_kit_options::TypstKitFontOptions;
     use typst_layout::PagedDocument;
 
-    let source = to_typst(markdown);
+    let source = to_typst(markdown, preamble);
     let mut builder = TypstEngine::builder()
         .main_file(source)
         .search_fonts_with(TypstKitFontOptions::default());
@@ -100,13 +119,14 @@ pub fn to_pdf(markdown: &str, base: Option<&Path>) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(feature = "pdf-export"))]
-pub fn to_pdf(_markdown: &str, _base: Option<&Path>) -> Result<Vec<u8>> {
+pub fn to_pdf(_markdown: &str, _base: Option<&Path>, _preamble: &str) -> Result<Vec<u8>> {
     anyhow::bail!("this build of smep was made without PDF export (the `pdf-export` feature)")
 }
 
-/// The Markdown as a standalone HTML page: GFM rendering with a small
-/// stylesheet, the document's first heading (or `title`) as the title.
-pub fn to_html(markdown: &str, title: &str) -> String {
+/// The Markdown as a standalone HTML page: GFM rendering with `stylesheet`
+/// (see [`stylesheet`]) in its head, the document's first heading (or
+/// `title`) as the title.
+pub fn to_html(markdown: &str, title: &str, stylesheet: &str) -> String {
     let options = markdown::Options {
         compile: markdown::CompileOptions {
             allow_dangerous_html: true,
@@ -117,20 +137,159 @@ pub fn to_html(markdown: &str, title: &str) -> String {
     };
     let body = markdown::to_html_with_options(markdown, &options).unwrap_or_default();
     format!(
-        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>{HTML_STYLE}</style>\n</head>\n<body>\n<main>\n{body}</main>\n</body>\n</html>\n",
-        html_escape(title)
+        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body>\n<main>\n{body}</main>\n</body>\n</html>\n",
+        html_escape(title),
+        stylesheet.trim_end()
     )
 }
 
-const HTML_STYLE: &str = "\
-body{margin:0;font:16px/1.6 -apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;color:#1f2328;background:#fff}\
-main{max-width:46em;margin:0 auto;padding:2em 1.5em}\
-h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.4em 0 .6em}h1{font-size:2em;border-bottom:1px solid #d1d9e0;padding-bottom:.3em}h2{font-size:1.5em;border-bottom:1px solid #d1d9e0;padding-bottom:.3em}\
-a{color:#0969da}pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;font-size:.9em}\
-code{background:#f6f8fa;padding:.15em .35em;border-radius:4px}pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}pre code{background:none;padding:0}\
-blockquote{margin:0;padding:0 1em;color:#59636e;border-left:.25em solid #d1d9e0}\
-table{border-collapse:collapse;margin:1em 0}th,td{border:1px solid #d1d9e0;padding:.4em .8em}th{background:#f6f8fa}\
-img{max-width:100%}hr{border:0;border-top:1px solid #d1d9e0;margin:2em 0}";
+/// The user's stylesheet, `export.css` in `config_dir`, if there is one.
+pub fn user_stylesheet(config_dir: Option<&Path>) -> Option<String> {
+    std::fs::read_to_string(config_dir?.join(STYLESHEET_FILE)).ok()
+}
+
+/// The user's Typst preamble, `export.typ` in `config_dir`, if there is
+/// one.
+pub fn user_preamble(config_dir: Option<&Path>) -> Option<String> {
+    std::fs::read_to_string(config_dir?.join(PREAMBLE_FILE)).ok()
+}
+
+/// The stylesheet of an HTML page in `palette`: the window's design in
+/// CSS, with what the window cannot draw (a rule under the first two
+/// heading levels is there too; here the quote wears the accent and a
+/// wash, table rows alternate, images sit centred).
+pub fn stylesheet(palette: &Palette) -> String {
+    let paper = theme::hex(palette.background);
+    let ink = theme::hex(palette.foreground);
+    let soft = theme::hex(palette.muted);
+    let accent = theme::hex(palette.link);
+    let surface = theme::hex(palette.code_background);
+    let line = theme::hex(palette.border);
+    let body_font = if palette.serif {
+        "Georgia,'Noto Serif','Songti SC','Noto Serif CJK SC',serif"
+    } else {
+        "-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif"
+    };
+    let heading = |level: u8| -> String {
+        let scale = theme::heading_scale(level);
+        let weight = theme::heading_weight(level).0 as u32;
+        let colour = if level >= 6 { &soft } else { &ink };
+        let rule = match palette.heading_rule(level) {
+            Some(Rule { width, colour }) => format!(
+                "padding-bottom:{:.2}em;border-bottom:{width}px solid {}",
+                theme::HEADING_RULE_GAP,
+                theme::hex(colour)
+            ),
+            None => String::new(),
+        };
+        format!("h{level}{{font-size:{scale}em;font-weight:{weight};color:{colour};{rule}}}\n")
+    };
+    let headings: String = (1..=6).map(heading).collect();
+    format!(
+        "/* smep: the {name} look. Save a copy as export.css in smep's config directory to make it your own. */\n\
+:root{{color-scheme:{scheme};--paper:{paper};--ink:{ink};--soft:{soft};--accent:{accent};--surface:{surface};--line:{line}}}\n\
+body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 {body_font};-webkit-font-smoothing:antialiased}}\n\
+main{{max-width:44em;margin:0 auto;padding:3em 1.5em 4em}}\n\
+h1,h2,h3,h4,h5,h6{{line-height:1.3;margin:1.6em 0 .6em;overflow-wrap:anywhere}}\n\
+h1:first-child{{margin-top:0}}\n\
+{headings}\
+p,ul,ol,blockquote,pre,table,figure{{margin:0 0 .95em}}\n\
+li{{margin:.2em 0}}\n\
+li>p{{margin:0}}\n\
+a{{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}}\n\
+a:hover{{border-bottom-color:var(--accent)}}\n\
+strong{{font-weight:600}}\n\
+code,pre,kbd{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono','Noto Sans Mono',monospace;font-size:{code}em}}\n\
+code{{background:var(--surface);padding:.1em .35em;border-radius:4px;overflow-wrap:anywhere}}\n\
+pre{{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.75em 1em;overflow:auto;line-height:1.5}}\n\
+pre code{{background:none;padding:0;font-size:1em;border-radius:0}}\n\
+blockquote{{padding:.5em 1em;color:var(--soft);background:var(--surface);border-left:3px solid var(--accent);border-radius:0 6px 6px 0}}\n\
+blockquote>:last-child{{margin-bottom:0}}\n\
+table{{border-collapse:collapse;width:100%;border:1px solid var(--line);font-size:.95em}}\n\
+th,td{{padding:.45em .8em;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}}\n\
+th{{background:var(--ink);color:var(--paper);font-weight:600}}\n\
+th a{{color:inherit}}\n\
+tr:nth-child(even) td{{background:var(--surface)}}\n\
+img{{max-width:100%;height:auto;display:block;margin:1em auto;border-radius:6px}}\n\
+hr{{border:0;border-top:1px solid var(--line);margin:2em 0}}\n\
+input[type=checkbox]{{accent-color:var(--accent);margin-right:.4em}}\n\
+.task-list-item{{list-style:none;margin-left:-1.4em}}\n\
+.footnotes{{margin-top:3em;padding-top:1em;border-top:1px solid var(--line);font-size:.9em;color:var(--soft)}}\n\
+.footnotes ol{{padding-left:1.4em}}\n\
+.sr-only{{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}\n\
+sup a{{border-bottom:0;font-weight:600}}\n\
+@media print{{body{{background:#fff}}main{{max-width:none;padding:0}}a{{color:inherit}}pre,blockquote,tr{{break-inside:avoid}}h1,h2,h3{{break-after:avoid}}}}\n",
+        name = palette.name,
+        scheme = if palette.dark { "dark" } else { "light" },
+        code = CODE_SCALE,
+    )
+}
+
+/// The Typst preamble of a PDF in `palette`: the page, the fonts, and the
+/// same design as the stylesheet in `set` and `show` rules. The markup
+/// after it is plain, so replacing the preamble replaces the whole look.
+pub fn preamble(palette: &Palette) -> String {
+    let fonts = |list: &[&str]| {
+        list.iter()
+            .map(|font| format!("{font:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let rule = |level: u8| -> String {
+        let scale = theme::heading_scale(level);
+        let weight = match theme::heading_weight(level) {
+            gpui_kit::FontWeight::BOLD => "bold",
+            _ => "semibold",
+        };
+        match palette.heading_rule(level) {
+            Some(Rule { width, colour }) => format!(
+                "#show heading.where(level: {level}): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: {gap}em), stroke: (bottom: {stroke}pt + rgb({colour:?})), text(size: {scale}em, weight: {weight:?}, it.body))\n",
+                gap = theme::HEADING_RULE_GAP,
+                stroke = width * 0.75,
+                colour = theme::hex(colour),
+            ),
+            None if level >= 6 => format!(
+                "#show heading.where(level: {level}): set text(size: {scale}em, weight: {weight:?}, fill: soft)\n"
+            ),
+            None => format!(
+                "#show heading.where(level: {level}): set text(size: {scale}em, weight: {weight:?})\n"
+            ),
+        }
+    };
+    let headings: String = (1..=6).map(rule).collect();
+    format!(
+        "// smep: the {name} look. Save a copy as export.typ in smep's config directory to make it your own.\n\
+#let paper = rgb({paper:?})\n\
+#let ink = rgb({ink:?})\n\
+#let soft = rgb({soft:?})\n\
+#let accent = rgb({accent:?})\n\
+#let surface = rgb({surface:?})\n\
+#let rule = rgb({line:?})\n\
+#set page(paper: \"a4\", margin: 2cm, numbering: \"1\", fill: paper)\n\
+#set text(font: ({body_fonts}), size: 11pt, fill: ink)\n\
+#set par(justify: false, leading: 0.7em)\n\
+#show link: set text(fill: accent)\n\
+#show raw: set text(font: ({code_fonts}), size: {code}em)\n\
+#show raw.where(block: true): it => block(width: 100%, fill: surface, stroke: 0.5pt + rule, radius: 4pt, inset: 8pt, it)\n\
+#show raw.where(block: false): it => box(fill: surface, inset: (x: 3pt), outset: (y: 3pt), radius: 2pt, it)\n\
+{headings}\
+#show quote.where(block: true): it => block(width: 100%, fill: surface, stroke: (left: 2pt + accent), inset: (left: 1em, right: 1em, y: 0.6em), radius: (right: 4pt), text(fill: soft, it.body))\n\
+#set table(stroke: (x, y) => (bottom: 0.5pt + rule), fill: (x, y) => if y == 0 {{ ink }} else if calc.even(y) {{ surface }} else {{ none }}, inset: (x: 0.6em, y: 0.45em))\n\
+#show table: set text(size: 10pt)\n\
+#show table.cell.where(y: 0): set text(fill: paper, weight: \"semibold\")\n\
+#set line(stroke: 0.5pt + rule)\n",
+        name = palette.name,
+        paper = theme::hex(palette.background),
+        ink = theme::hex(palette.foreground),
+        soft = theme::hex(palette.muted),
+        accent = theme::hex(palette.link),
+        surface = theme::hex(palette.code_background),
+        line = theme::hex(palette.border),
+        body_fonts = fonts(BODY_FONTS),
+        code_fonts = fonts(CODE_FONTS),
+        code = CODE_SCALE,
+    )
+}
 
 fn html_escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -188,29 +347,6 @@ impl Writer {
                 self.collect(child);
             }
         }
-    }
-
-    fn preamble(&mut self) {
-        let fonts = |list: &[&str]| {
-            list.iter()
-                .map(|font| format!("{font:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let _ = writeln!(
-            self.out,
-            "#set page(paper: \"a4\", margin: 2cm, numbering: \"1\")\n\
-             #set text(font: ({}), size: 11pt)\n\
-             #set par(justify: false, leading: 0.7em)\n\
-             #show raw: set text(font: ({}))\n\
-             #show link: set text(fill: rgb(\"#0969da\"))\n\
-             #show heading.where(level: 1): set text(size: 22pt)\n\
-             #show heading.where(level: 2): set text(size: 17pt)\n\
-             #show heading.where(level: 3): set text(size: 14pt)\n\
-             #show table: set text(size: 10pt)\n",
-            fonts(BODY_FONTS),
-            fonts(CODE_FONTS)
-        );
     }
 
     /// Top-level and nested blocks, `indent` spaces deep (inside lists).
@@ -315,7 +451,8 @@ impl Writer {
             }
             Node::Table(table) => self.table(table, indent),
             Node::ThematicBreak(_) => {
-                let _ = writeln!(self.out, "{pad}#line(length: 100%, stroke: 0.5pt + gray)");
+                // Its stroke is the preamble's (`set line`).
+                let _ = writeln!(self.out, "{pad}#line(length: 100%)");
             }
             Node::Html(html) => {
                 // Raw HTML has no Typst counterpart; its text is kept so
@@ -355,9 +492,11 @@ impl Writer {
                 _ => "left",
             })
             .collect();
+        // Strokes, fills and the header's type are the preamble's
+        // (`set table`, `show table.cell`).
         let _ = writeln!(
             self.out,
-            "{pad}#table(\n{pad}  columns: {columns},\n{pad}  align: ({},),\n{pad}  stroke: 0.5pt + gray,",
+            "{pad}#table(\n{pad}  columns: {columns},\n{pad}  align: ({},),",
             align.join(", ")
         );
         for (ix, row) in table.children.iter().enumerate() {
@@ -557,10 +696,25 @@ fn strip_tags(html: &str) -> String {
 mod tests {
     use super::*;
 
+    use crate::theme::PreviewTheme;
+
+    fn paper() -> Palette {
+        PreviewTheme::Paper.palette().unwrap()
+    }
+
+    fn paper_preamble() -> String {
+        preamble(&paper())
+    }
+
+    fn pdf(markdown: &str, base: Option<&Path>) -> Result<Vec<u8>> {
+        to_pdf(markdown, base, &paper_preamble())
+    }
+
     /// The markup after the preamble.
     fn body(markdown: &str) -> String {
-        let source = to_typst(markdown);
-        let (_, body) = source.split_once("\n\n").unwrap();
+        let source = to_typst(markdown, "#set text(size: 11pt)");
+        let (preamble, body) = source.split_once("\n\n").unwrap();
+        assert_eq!(preamble, "#set text(size: 11pt)");
         body.to_string()
     }
 
@@ -614,12 +768,108 @@ mod tests {
     fn code_blocks_quotes_rules_and_tables() {
         assert_eq!(
             body("```rust\nfn main() {}\n```\n\n> quoted\n\n---\n"),
-            "#raw(block: true, lang: \"rust\", \"fn main() {}\")\n\n#quote(block: true)[\n  quoted\n]\n\n#line(length: 100%, stroke: 0.5pt + gray)\n"
+            "#raw(block: true, lang: \"rust\", \"fn main() {}\")\n\n#quote(block: true)[\n  quoted\n]\n\n#line(length: 100%)\n"
         );
         assert_eq!(
             body("| a | b |\n|:-:|--:|\n| 1 | 2 |\n"),
-            "#table(\n  columns: 2,\n  align: (center, right,),\n  stroke: 0.5pt + gray,\n  table.header([a], [b], ),\n  [1], [2], \n)\n"
+            "#table(\n  columns: 2,\n  align: (center, right,),\n  table.header([a], [b], ),\n  [1], [2], \n)\n"
         );
+    }
+
+    #[test]
+    fn the_markup_carries_no_look_of_its_own() {
+        // Every colour, stroke and size is the preamble's, so a preamble of
+        // the user's own restyles the whole document.
+        let markup =
+            body("# T\n\n> q\n\n---\n\n| a |\n|---|\n| 1 |\n\n```\nx\n```\n\n[l](https://x.y)\n");
+        for word in ["rgb(", "stroke", "fill", "size:", "#set", "#show"] {
+            assert!(!markup.contains(word), "{word:?} in {markup}");
+        }
+    }
+
+    #[test]
+    fn the_preamble_is_the_palettes_design() {
+        let text = paper_preamble();
+        assert!(text.starts_with("// smep: the Paper look."), "{text}");
+        for line in [
+            "#let paper = rgb(\"#f8f7f3\")",
+            "#let ink = rgb(\"#1a1a18\")",
+            "#let accent = rgb(\"#c3423f\")",
+            "#set page(paper: \"a4\", margin: 2cm, numbering: \"1\", fill: paper)",
+            "size: 11pt, fill: ink)",
+            "#show link: set text(fill: accent)",
+            "size: 0.9em)",
+            "#show heading.where(level: 1): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: 0.25em), stroke: (bottom: 1.5pt + rgb(\"#1a1a18\")), text(size: 1.62em, weight: \"bold\", it.body))",
+            "#show heading.where(level: 2): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: 0.25em), stroke: (bottom: 0.75pt + rgb(\"#e4e1da\")), text(size: 1.46em, weight: \"semibold\", it.body))",
+            "#show heading.where(level: 3): set text(size: 1.2em, weight: \"semibold\")",
+            "#show heading.where(level: 6): set text(size: 0.92em, weight: \"semibold\", fill: soft)",
+            "#show table.cell.where(y: 0): set text(fill: paper, weight: \"semibold\")",
+            "#set line(stroke: 0.5pt + rule)",
+            "\"Noto Serif\", \"Georgia\"",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from {text}");
+        }
+        // The dark paper prints as itself only when asked for by name; the
+        // export takes the family's light theme (`print_palette`).
+        let dark = preamble(&PreviewTheme::PaperDark.palette().unwrap());
+        assert!(dark.contains("#let paper = rgb(\"#121212\")"));
+        assert!(dark.starts_with("// smep: the Paper Dark look."));
+    }
+
+    #[test]
+    fn the_stylesheet_is_the_palettes_design() {
+        let css = stylesheet(&paper());
+        assert!(css.starts_with("/* smep: the Paper look."), "{css}");
+        for line in [
+            ":root{color-scheme:light;--paper:#f8f7f3;--ink:#1a1a18;--soft:#5d5b55;--accent:#c3423f;--surface:#f4f2ee;--line:#e4e1da}",
+            "h1{font-size:1.62em;font-weight:700;color:#1a1a18;padding-bottom:0.25em;border-bottom:2px solid #1a1a18}",
+            "h2{font-size:1.46em;font-weight:600;color:#1a1a18;padding-bottom:0.25em;border-bottom:1px solid #e4e1da}",
+            "h3{font-size:1.2em;font-weight:600;color:#1a1a18;}",
+            "h6{font-size:0.92em;font-weight:600;color:#5d5b55;}",
+            "th{background:var(--ink);color:var(--paper);font-weight:600}",
+            "tr:nth-child(even) td{background:var(--surface)}",
+            "blockquote{padding:.5em 1em;color:var(--soft);background:var(--surface);border-left:3px solid var(--accent)",
+            "pre{background:var(--surface);border:1px solid var(--line);border-radius:8px",
+            "font-size:0.9em}",
+            "img{max-width:100%;height:auto;display:block;margin:1em auto;border-radius:6px}",
+            ".footnotes{",
+            "@media print{",
+        ] {
+            assert!(css.contains(line), "{line:?} missing from {css}");
+        }
+        assert!(css.contains("sans-serif"), "Paper is sans");
+        let sepia = stylesheet(&PreviewTheme::Sepia.palette().unwrap());
+        assert!(sepia.contains("Georgia,'Noto Serif'"), "Sepia is serif");
+        let dark = stylesheet(&PreviewTheme::PaperDark.palette().unwrap());
+        assert!(dark.contains("color-scheme:dark;--paper:#121212;--ink:#c1bfba"));
+    }
+
+    #[test]
+    fn the_users_own_files_replace_the_built_in_look() {
+        let dir = std::env::temp_dir().join(format!("smep-export-look-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(user_stylesheet(Some(&dir)), None);
+        assert_eq!(user_preamble(Some(&dir)), None);
+        assert_eq!(user_stylesheet(None), None, "no config dir, nothing read");
+
+        std::fs::write(dir.join(STYLESHEET_FILE), "body{color:red}\n").unwrap();
+        std::fs::write(dir.join(PREAMBLE_FILE), "#set text(red)\n").unwrap();
+        assert_eq!(
+            user_stylesheet(Some(&dir)).as_deref(),
+            Some("body{color:red}\n")
+        );
+        assert_eq!(
+            user_preamble(Some(&dir)).as_deref(),
+            Some("#set text(red)\n")
+        );
+
+        let html = to_html("hi\n", "T", "body{color:red}\n");
+        assert!(
+            html.contains("<style>\nbody{color:red}\n</style>"),
+            "{html}"
+        );
+        assert!(to_typst("hi\n", "#set text(red)\n").starts_with("#set text(red)\n\nhi\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -637,8 +887,9 @@ mod tests {
     #[test]
     fn html_keeps_its_text_and_empty_input_is_just_the_preamble() {
         assert_eq!(body("<div>kept <b>text</b></div>\n"), "kept text\n");
-        let source = to_typst("");
-        assert!(source.starts_with("#set page("));
+        let source = to_typst("", &paper_preamble());
+        assert!(source.starts_with("// smep: the Paper look."));
+        assert!(source.contains("#set page("));
         assert_eq!(body(""), "", "{source:?}");
     }
 
@@ -653,7 +904,12 @@ mod tests {
 
     #[test]
     fn html_export_is_a_whole_page() {
-        let html = to_html("# Hi <b>\n\n中文 & more\n", "T & <x>");
+        let html = to_html(
+            "# Hi <b>\n\n中文 & more\n",
+            "T & <x>",
+            &stylesheet(&paper()),
+        );
+        assert!(html.contains("<style>\n/* smep: the Paper look."));
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<title>T &amp; &lt;x&gt;</title>"));
         assert!(
@@ -666,8 +922,8 @@ mod tests {
     #[cfg(all(feature = "pdf-export", feature = "pdf-import"))]
     #[test]
     fn a_document_compiles_to_a_pdf_whose_text_reads_back() {
-        let markdown = "# 标题 Title\n\nSome *text* with 中文, `code` and a list:\n\n- one\n  wrapped\n- two\n\nTotal\n= 5\n\n2\\. counted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\nnote[^1]\n\n[^1]: The footnote.\n";
-        let pdf = to_pdf(markdown, None).unwrap();
+        let markdown = "# 标题 Title\n\n## Second\n\n### Third\n\nSome *text* with 中文, `code` and a list:\n\n- one\n  wrapped\n- two\n\n> quoted\n\n---\n\nTotal\n= 5\n\n2\\. counted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n```rust\nfn main() {}\n```\n\nnote[^1]\n\n[^1]: The footnote.\n";
+        let pdf = pdf(markdown, None).unwrap();
         assert!(pdf.starts_with(b"%PDF-"), "{:?}", &pdf[..8]);
 
         // The same reader the import uses gets the text back out: the fonts
@@ -677,12 +933,15 @@ mod tests {
         let text = crate::convert::from_bytes(&pdf, crate::convert::Format::Pdf).unwrap();
         for expected in [
             "Title",
+            "Second",
+            "Third",
             "Some",
             "text",
             "code",
             "one",
             "wrapped",
             "two",
+            "quoted",
             "= 5",
             "2. counted",
             "fn main",
@@ -704,8 +963,8 @@ mod tests {
         // No timestamp or random id in the PDF, so an export can be
         // compared with the last one.
         let markdown = "# Same\n\nText, a [link](https://x.y) and a list:\n\n- one\n- two\n";
-        let first = to_pdf(markdown, None).unwrap();
-        let second = to_pdf(markdown, None).unwrap();
+        let first = pdf(markdown, None).unwrap();
+        let second = pdf(markdown, None).unwrap();
         assert!(first == second, "{} vs {} bytes", first.len(), second.len());
         // For comparing across processes (`--nocapture`): the font list is
         // read from the system on each run.
@@ -713,9 +972,10 @@ mod tests {
             (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
         });
         eprintln!("pdf fnv1a {hash:016x}, {} bytes", first.len());
+        let css = stylesheet(&paper());
         assert_eq!(
-            to_html(markdown, "Same"),
-            to_html(markdown, "Same"),
+            to_html(markdown, "Same", &css),
+            to_html(markdown, "Same", &css),
             "HTML too"
         );
     }
@@ -742,9 +1002,23 @@ mod tests {
             "[^n]\n\n[^n]: = foot\n  - note",
             "\\#\\$\\@\\/\\/\\~\\'",
             "<b>= html</b>",
+            "#### four\n\n##### five\n\n###### six\n\n> # heading in a quote\n\n| only header |\n|---|\n",
         ] {
-            let result = to_pdf(markdown, None);
+            let result = pdf(markdown, None);
             assert!(result.is_ok(), "{markdown:?}: {:?}", result.err());
+        }
+    }
+
+    #[cfg(feature = "pdf-export")]
+    #[test]
+    fn every_palette_typesets_a_document() {
+        let markdown = "# T\n\n## S\n\n> q\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n```\nx\n```\n\n---\n\n[l](https://x.y) and `c`.\n";
+        for theme in crate::theme::ALL {
+            let Some(palette) = theme.palette() else {
+                continue;
+            };
+            let result = to_pdf(markdown, None, &preamble(&palette));
+            assert!(result.is_ok(), "{theme:?}: {:?}", result.err());
         }
     }
 
@@ -767,7 +1041,7 @@ mod tests {
         // An image that does not exist next to a base directory.
         let dir = std::env::temp_dir().join(format!("smep-export-missing-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let err = to_pdf("![x](missing.png)\n", Some(&dir)).unwrap_err();
+        let err = pdf("![x](missing.png)\n", Some(&dir)).unwrap_err();
         assert!(err.to_string().contains("could not typeset"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }

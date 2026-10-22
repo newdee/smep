@@ -50,7 +50,9 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - Preview themes (Paper and Paper Dark, GitHub, Newsprint, Night, Sepia,
   Solarized Light/Dark, or the application's own look): right-click the
   preview or the rendered document. The choice is remembered in
-  `settings.toml` under the platform config directory.
+  `settings.toml` under the platform config directory (`~/.config/smep`,
+  `~/Library/Application Support/smep`, `%APPDATA%\smep`, or
+  `$SMEP_CONFIG_DIR`).
 - Opens reading: the document rendered as one page, nothing to click into
   by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
   Home / End, the arrows). The Write button in the title bar (or Ctrl+E)
@@ -70,13 +72,20 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   files are not carried over.
 - Export as PDF (typeset by [Typst](https://typst.app), built in: headings,
   lists, tables, code, quotes, footnotes, local images; CJK text uses the
-  system's fonts) or as a standalone HTML page, under File.
+  system's fonts) or as a standalone HTML page, under File. Both wear the
+  preview's look (a PDF the light one of its family: print is ink on
+  paper). `smep --css` and `smep --typst` print the stylesheet and the
+  Typst preamble behind them; saved as `export.css` or `export.typ` in
+  the config directory, your edited copy is what every export uses.
 - Ink on paper: the application wears the Paper look of
   [dfine-blog](https://github.com/newdee/dfine-blog), light or dark with
   the system (warm white or near-black paper, grey inks, cinnabar for the
-  cursor, headings and links), and the rendered document is typeset the
-  way the blog is: its heading scale, paragraph gap, framed code blocks
-  and tables ruled across only, whichever preview theme colours it.
+  cursor, headings and links). The document is one design in every
+  preview theme, on screen, in HTML and in PDF: the blog's heading scale
+  with a rule under the first two levels, its paragraph gap, code a shade
+  smaller in a framed block, tables framed with a header row of ink on
+  paper (and, where the page can, quotes in the accent with a wash and
+  alternating rows).
 - One static binary, no web view, no Electron.
 
 ## Keys
@@ -129,8 +138,9 @@ and "Open With" run it inside a Terminal window, and only an application
 can claim `.md` files. Take the cask or the release's `smep.app` for that.
 (No Linux formula: that binary needs the system's X11, xkbcommon, Wayland
 and Vulkan libraries, which a Homebrew prefix does not provide; use `cargo
-install` or the release tarball there.) `smep --version` and `smep --help`
-print and exit without opening a window. On Windows smep is a GUI program:
+install` or the release tarball there.) `smep --version`, `smep --help`,
+`smep --css [THEME]` and `smep --typst [THEME]` print and exit without
+opening a window. On Windows smep is a GUI program:
 no terminal window comes up with it, and in a terminal it still prints.
 PowerShell neither waits for a GUI program nor captures its output, so a
 script there asks through `cmd /c smep --version` (or `Start-Process -Wait

@@ -1,7 +1,7 @@
 //! User settings, kept in a small TOML file under the platform config dir.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,14 +62,25 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The settings file: `$SMEP_CONFIG_DIR/settings.toml`, else the
-    /// platform config dir plus `smep/settings.toml`.
+    /// The config directory: `$SMEP_CONFIG_DIR`, else the platform config
+    /// dir plus `smep`. The settings file and the user's export stylesheet
+    /// and preamble live there.
+    pub fn default_dir() -> Option<PathBuf> {
+        match std::env::var_os(DIR_ENV) {
+            Some(dir) => Some(PathBuf::from(dir)),
+            None => Some(dirs::config_dir()?.join("smep")),
+        }
+    }
+
+    /// The settings file, `settings.toml` in [`Self::default_dir`].
     pub fn default_path() -> Option<PathBuf> {
-        let dir = match std::env::var_os(DIR_ENV) {
-            Some(dir) => PathBuf::from(dir),
-            None => dirs::config_dir()?.join("smep"),
-        };
-        Some(dir.join("settings.toml"))
+        Some(Self::default_dir()?.join("settings.toml"))
+    }
+
+    /// The directory these settings live in; `None` when they are never
+    /// written (and nothing else is read from there either).
+    pub fn dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
     }
 
     /// Read the settings at the default path. A missing or unreadable file
