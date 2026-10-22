@@ -14,9 +14,16 @@ place, block by block.
 
 ## Status
 
-`0.1.10` is the eleventh release: smep has an icon (a cinnabar seal with
-an M on paper) in the Windows executable, the macOS app and the Linux
-desktop entry. The Paper look is dfine-blog's (warm white or near-black
+`0.1.11` is the twelfth release: the document is one design on screen,
+in the exported HTML page and in the PDF (a rule under h1 and h2, a
+framed table with a header row of ink on paper, framed code, and on the
+page and in print a washed quote and alternating rows), the stylesheet
+and the Typst preamble behind the exports are yours to edit
+(`smep --css`, `smep --typst`, then `export.css` / `export.typ` in the
+config directory), and a document's local images show in the preview.
+It is built on gpui-kit 0.8. Before that, smep got an icon (a cinnabar
+seal with an M on paper) in the Windows executable, the macOS app and
+the Linux desktop entry. The Paper look is dfine-blog's (warm white or near-black
 paper, grey inks, cinnabar), the rendered document is typeset the blog's
 way in every preview theme, reading mode shows the document as one page
 (footnotes and selections work across blocks), and the title bar's toggle
