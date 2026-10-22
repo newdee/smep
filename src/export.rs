@@ -29,7 +29,7 @@ use markdown::ParseOptions;
 use markdown::mdast::{AlignKind, Node};
 
 use crate::convert::LineStart;
-use crate::theme::{self, CODE_SCALE, Palette, Rule};
+use crate::theme::{self, CODE_LEADING, CODE_SCALE, Palette};
 
 /// The user's own stylesheet for HTML pages, in the config directory.
 pub const STYLESHEET_FILE: &str = "export.css";
@@ -40,8 +40,25 @@ pub const PREAMBLE_FILE: &str = "export.typ";
 /// Fonts to try, in order, for body text: the system faces of each
 /// platform, Latin first and CJK after. Typst takes the first installed one
 /// and falls back glyph by glyph through the rest, then through every font
-/// on the system, so a missing name costs nothing.
-const BODY_FONTS: &[&str] = &[
+/// on the system, so a missing name costs nothing. Sans, as the blog's
+/// body; [`SERIF_FONTS`] for a serif theme.
+const SANS_FONTS: &[&str] = &[
+    "Segoe UI",
+    "Helvetica Neue",
+    "Arial",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "PingFang SC",
+    "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "Hiragino Sans GB",
+];
+
+/// Serif faces: the blog's headings (its "Song bones"), and the body of a
+/// serif theme. Latin first, then a Song face for CJK, then any CJK face.
+const SERIF_FONTS: &[&str] = &[
     "Noto Serif",
     "Georgia",
     "Times New Roman",
@@ -49,14 +66,11 @@ const BODY_FONTS: &[&str] = &[
     "DejaVu Serif",
     "Liberation Serif",
     "Noto Serif CJK SC",
-    "Noto Sans CJK SC",
     "Source Han Serif SC",
-    "Source Han Sans SC",
-    "PingFang SC",
     "Songti SC",
-    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "PingFang SC",
     "Microsoft YaHei",
-    "SimSun",
 ];
 
 const CODE_FONTS: &[&str] = &[
@@ -135,7 +149,7 @@ pub fn to_html(markdown: &str, title: &str, stylesheet: &str) -> String {
         },
         ..markdown::Options::gfm()
     };
-    let body = markdown::to_html_with_options(markdown, &options).unwrap_or_default();
+    let body = code_boards(&markdown::to_html_with_options(markdown, &options).unwrap_or_default());
     format!(
         "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body>\n<main>\n{body}</main>\n</body>\n</html>\n",
         html_escape(title),
@@ -154,75 +168,152 @@ pub fn user_preamble(config_dir: Option<&Path>) -> Option<String> {
     std::fs::read_to_string(config_dir?.join(PREAMBLE_FILE)).ok()
 }
 
-/// The stylesheet of an HTML page in `palette`: the window's design in
-/// CSS, with what the window cannot draw (a rule under the first two
-/// heading levels is there too; here the quote wears the accent and a
-/// wash, table rows alternate, images sit centred).
+/// The CSS font stacks: the blog's sans body, its serif headings, mono.
+const CSS_SANS: &str = "-apple-system,'PingFang SC','Microsoft YaHei','Noto Sans SC','Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+const CSS_SERIF: &str =
+    "'Noto Serif SC','Source Han Serif SC','Songti SC','STSong',Georgia,'Noto Serif',serif";
+const CSS_MONO: &str =
+    "ui-monospace,'Cascadia Code','SF Mono',Menlo,Consolas,'Liberation Mono',monospace";
+
+/// The stylesheet of an HTML page in `palette`: the blog's article page in
+/// the palette's colours (the window draws as much of it as its renderer
+/// has hooks for).
 pub fn stylesheet(palette: &Palette) -> String {
-    let paper = theme::hex(palette.background);
-    let ink = theme::hex(palette.foreground);
-    let soft = theme::hex(palette.muted);
-    let accent = theme::hex(palette.link);
-    let surface = theme::hex(palette.code_background);
-    let line = theme::hex(palette.border);
-    let body_font = if palette.serif {
-        "Georgia,'Noto Serif','Songti SC','Noto Serif CJK SC',serif"
+    let hex = theme::hex;
+    let mut soft_accent = hex(palette.accent_soft());
+    let _ = write!(
+        soft_accent,
+        "{:02x}",
+        (palette.accent_soft().a * 255.).round() as u8
+    );
+    // The code board: a whiteboard in a thick frame on light paper, a
+    // hairline frame with the accent along its top on dark.
+    let board = if palette.dark {
+        ".code{margin:1.6rem 0;border:1px solid var(--code-frame);border-top:2px solid var(--accent);border-radius:10px;overflow:hidden}\n\
+.code pre{margin:0;border:0;border-radius:0}\n\
+.code-head{border-bottom:1px solid var(--line)}\n"
     } else {
-        "-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif"
+        ".code{margin:1.6rem 0;border:5px solid var(--code-frame);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgb(0 0 0/.08),0 2px 8px rgb(26 26 24/.06)}\n\
+.code pre{margin:0;border:0;border-radius:0;box-shadow:inset 0 2px 6px rgb(0 0 0/.07)}\n\
+.code-head{border-bottom:1px solid rgb(0 0 0/.16)}\n"
     };
-    let heading = |level: u8| -> String {
-        let scale = theme::heading_scale(level);
-        let weight = theme::heading_weight(level).0 as u32;
-        let colour = if level >= 6 { &soft } else { &ink };
-        let rule = match palette.heading_rule(level) {
-            Some(Rule { width, colour }) => format!(
-                "padding-bottom:{:.2}em;border-bottom:{width}px solid {}",
-                theme::HEADING_RULE_GAP,
-                theme::hex(colour)
-            ),
-            None => String::new(),
-        };
-        format!("h{level}{{font-size:{scale}em;font-weight:{weight};color:{colour};{rule}}}\n")
-    };
-    let headings: String = (1..=6).map(heading).collect();
+    let body_font = if palette.serif { CSS_SERIF } else { CSS_SANS };
     format!(
         "/* smep: the {name} look. Save a copy as export.css in smep's config directory to make it your own. */\n\
-:root{{color-scheme:{scheme};--paper:{paper};--ink:{ink};--soft:{soft};--accent:{accent};--surface:{surface};--line:{line}}}\n\
-body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 {body_font};-webkit-font-smoothing:antialiased}}\n\
-main{{max-width:44em;margin:0 auto;padding:3em 1.5em 4em}}\n\
-h1,h2,h3,h4,h5,h6{{line-height:1.3;margin:1.6em 0 .6em;overflow-wrap:anywhere}}\n\
-h1:first-child{{margin-top:0}}\n\
-{headings}\
-p,ul,ol,blockquote,pre,table,figure{{margin:0 0 .95em}}\n\
-li{{margin:.2em 0}}\n\
+:root{{color-scheme:{scheme};--paper:{paper};--paper-dim:{wash};--ink:{ink};--ink-soft:{soft};--ink-faint:{faint};--line:{line};--accent:{accent};--accent-soft:{soft_accent};--code-bg:{code_bg};--code-surface:{surface};--code-head-bg:{rail};--code-frame:{frame};--font-body:{body_font};--font-serif:{CSS_SERIF};--font-mono:{CSS_MONO}}}\n\
+body{{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:1.02rem;line-height:1.85;overflow-wrap:break-word;-webkit-font-smoothing:antialiased}}\n\
+main{{max-width:44rem;margin:0 auto;padding:3rem 1.25rem 4rem}}\n\
+main>:first-child{{margin-top:0}}\n\
+h1,h2,h3,h4,h5,h6{{line-height:1.45;overflow-wrap:anywhere}}\n\
+h1{{font-family:var(--font-serif);font-size:{h1}rem;letter-spacing:.02em;margin:3rem 0 1.1rem}}\n\
+h2{{font-family:var(--font-serif);font-size:{h2}rem;letter-spacing:.02em;margin:3rem 0 1.05rem;padding-bottom:{gap}rem;background:linear-gradient(to right,var(--line) 0%,var(--line) 30%,transparent 85%) bottom/100% 1px no-repeat}}\n\
+h3{{font-family:var(--font-serif);font-size:{h3}rem;margin:2.3rem 0 .85rem}}\n\
+h3::before{{content:'';display:inline-block;width:.46em;height:.46em;background:var(--accent);border-radius:1px;margin-right:.55em;vertical-align:.12em}}\n\
+h4{{font-size:{h4}rem;font-weight:600;margin:1.7rem 0 .6rem}}\n\
+h4::before{{content:'';display:inline-block;width:.42em;height:.42em;border:1.5px solid var(--accent);border-radius:1px;margin-right:.5em;vertical-align:.1em;opacity:.75}}\n\
+h5,h6{{font-size:{h5}rem;font-weight:600;color:var(--ink-soft);margin:1.5rem 0 .5rem;letter-spacing:.04em}}\n\
+p{{margin:.95rem 0}}\n\
+a{{color:var(--accent);text-decoration:underline;text-decoration-color:var(--accent-soft);text-underline-offset:.22em;text-decoration-thickness:1px}}\n\
+a:hover{{text-decoration-color:var(--accent)}}\n\
+strong{{font-weight:600;background:linear-gradient(transparent 62%,var(--accent-soft) 62%)}}\n\
+del{{color:var(--ink-faint)}}\n\
+blockquote{{position:relative;margin:1.5rem 0;padding:.8rem 1.2rem .8rem 1.3rem;background:var(--paper-dim);border-left:2px solid var(--line);border-radius:0 8px 8px 0;color:var(--ink-soft);font-size:.97em}}\n\
+blockquote::before{{content:'「';position:absolute;top:-.55rem;left:-.4rem;font-family:var(--font-serif);font-size:1.7rem;line-height:1;color:var(--accent);opacity:.5;pointer-events:none}}\n\
+blockquote p{{margin:.4rem 0}}\n\
+blockquote blockquote{{background:transparent;border-radius:0}}\n\
+blockquote blockquote::before{{content:none}}\n\
+hr{{border:none;height:1px;margin:2.6rem auto;width:38%;background:linear-gradient(to right,transparent,var(--ink-faint),transparent)}}\n\
+table{{border-collapse:collapse;display:block;overflow-x:auto;max-width:100%;font-size:.92rem;margin:1.3rem 0}}\n\
+th{{border:none;border-bottom:2px solid var(--ink-faint);padding:.42rem .9rem;text-align:left;font-weight:600}}\n\
+td{{border:none;border-bottom:1px solid var(--line);padding:.42rem .9rem}}\n\
+code,kbd,pre{{font-family:var(--font-mono)}}\n\
+code{{font-size:.86em;background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:.08em .4em}}\n\
+kbd{{font-size:.8em;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:.05em .42em;background:var(--code-surface)}}\n\
+pre{{margin:1.6rem 0;padding:1rem 1.2rem;overflow-x:auto;line-height:{leading};background:var(--code-surface);border:1px solid var(--code-frame);border-radius:10px}}\n\
+pre code{{background:none;border:none;padding:0;font-size:{code}rem}}\n\
+{board}\
+.code-head{{display:flex;align-items:center;gap:.7rem;padding:.45rem 1.1rem;background:var(--code-head-bg);font-family:var(--font-mono);font-size:.72rem;line-height:1.6}}\n\
+.code-lang{{text-transform:uppercase;letter-spacing:.08em;color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:.02rem .45rem}}\n\
+img{{max-width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}}\n\
+ul,ol{{padding-left:1.45rem;margin:.9rem 0}}\n\
+li{{margin:.32rem 0}}\n\
 li>p{{margin:0}}\n\
-a{{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}}\n\
-a:hover{{border-bottom-color:var(--accent)}}\n\
-strong{{font-weight:600}}\n\
-code,pre,kbd{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono','Noto Sans Mono',monospace;font-size:{code}em}}\n\
-code{{background:var(--surface);padding:.1em .35em;border-radius:4px;overflow-wrap:anywhere}}\n\
-pre{{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.75em 1em;overflow:auto;line-height:1.5}}\n\
-pre code{{background:none;padding:0;font-size:1em;border-radius:0}}\n\
-blockquote{{padding:.5em 1em;color:var(--soft);background:var(--surface);border-left:3px solid var(--accent);border-radius:0 6px 6px 0}}\n\
-blockquote>:last-child{{margin-bottom:0}}\n\
-table{{border-collapse:collapse;width:100%;border:1px solid var(--line);font-size:.95em}}\n\
-th,td{{padding:.45em .8em;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}}\n\
-th{{background:var(--ink);color:var(--paper);font-weight:600}}\n\
-th a{{color:inherit}}\n\
-tr:nth-child(even) td{{background:var(--surface)}}\n\
-img{{max-width:100%;height:auto;display:block;margin:1em auto;border-radius:6px}}\n\
-hr{{border:0;border-top:1px solid var(--line);margin:2em 0}}\n\
+li::marker{{color:var(--ink-faint)}}\n\
 input[type=checkbox]{{accent-color:var(--accent);margin-right:.4em}}\n\
-.task-list-item{{list-style:none;margin-left:-1.4em}}\n\
-.footnotes{{margin-top:3em;padding-top:1em;border-top:1px solid var(--line);font-size:.9em;color:var(--soft)}}\n\
+li:has(>input[type=checkbox]:first-child){{list-style:none;margin-left:-1.4em}}\n\
+.footnotes{{margin-top:3rem;border-top:1px solid var(--line);padding-top:1.1rem;font-size:.88rem;color:var(--ink-soft)}}\n\
 .footnotes ol{{padding-left:1.4em}}\n\
+.data-footnote-backref{{color:var(--ink-faint);text-decoration:none}}\n\
+sup a{{text-decoration:none}}\n\
 .sr-only{{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}\n\
-sup a{{border-bottom:0;font-weight:600}}\n\
-@media print{{body{{background:#fff}}main{{max-width:none;padding:0}}a{{color:inherit}}pre,blockquote,tr{{break-inside:avoid}}h1,h2,h3{{break-after:avoid}}}}\n",
+::selection{{background:var(--accent-soft)}}\n\
+@media print{{main{{max-width:none;padding:0}}.code,pre,blockquote,tr,img{{break-inside:avoid}}h1,h2,h3,h4{{break-after:avoid}}}}\n",
         name = palette.name,
         scheme = if palette.dark { "dark" } else { "light" },
+        paper = hex(palette.background),
+        wash = hex(palette.wash),
+        ink = hex(palette.foreground),
+        soft = hex(palette.muted),
+        faint = hex(palette.faint),
+        line = hex(palette.border),
+        accent = hex(palette.link),
+        code_bg = hex(palette.code_background),
+        surface = hex(palette.code_surface),
+        rail = hex(palette.code_rail),
+        frame = hex(palette.code_frame),
+        h1 = theme::heading_scale(1),
+        h2 = theme::heading_scale(2),
+        h3 = theme::heading_scale(3),
+        h4 = theme::heading_scale(4),
+        h5 = theme::heading_scale(5),
+        gap = theme::HEADING_RULE_GAP,
+        leading = CODE_LEADING,
         code = CODE_SCALE,
     )
+}
+
+/// Code blocks as the blog sets them: each `<pre><code>` the Markdown
+/// rendering wrote goes into a `figure.code`, under a band naming its
+/// language (`code-plain` without one). A `<pre>` from raw HTML that does
+/// not close the same way is left alone.
+fn code_boards(html: &str) -> String {
+    const OPEN: &str = "<pre><code";
+    const CLOSE: &str = "</code></pre>";
+    let mut out = String::with_capacity(html.len() + 256);
+    let mut rest = html;
+    while let Some(start) = rest.find(OPEN) {
+        let from = &rest[start..];
+        let Some(end) = from.find(CLOSE) else {
+            break;
+        };
+        let block = &from[..end + CLOSE.len()];
+        if block[OPEN.len()..].contains("<pre") {
+            // Another <pre> opens before this one closes: not a block the
+            // Markdown rendering wrote. Move past its opening only.
+            out.push_str(&rest[..start + OPEN.len()]);
+            rest = &rest[start + OPEN.len()..];
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        let lang = block
+            .strip_prefix("<pre><code class=\"language-")
+            .and_then(|tail| tail.split_once('"'))
+            .map(|(lang, _)| lang);
+        match lang {
+            Some(lang) => {
+                let _ = write!(
+                    out,
+                    "<figure class=\"code\"><div class=\"code-head\"><span class=\"code-lang\">{lang}</span></div>{block}</figure>"
+                );
+            }
+            None => {
+                let _ = write!(out, "<figure class=\"code code-plain\">{block}</figure>");
+            }
+        }
+        rest = &from[block.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The Typst preamble of a PDF in `palette`: the page, the fonts, and the
@@ -235,59 +326,107 @@ pub fn preamble(palette: &Palette) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let rule = |level: u8| -> String {
-        let scale = theme::heading_scale(level);
-        let weight = match theme::heading_weight(level) {
-            gpui_kit::FontWeight::BOLD => "bold",
-            _ => "semibold",
-        };
-        match palette.heading_rule(level) {
-            Some(Rule { width, colour }) => format!(
-                "#show heading.where(level: {level}): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: {gap}em), stroke: (bottom: {stroke}pt + rgb({colour:?})), text(size: {scale}em, weight: {weight:?}, it.body))\n",
-                gap = theme::HEADING_RULE_GAP,
-                stroke = width * 0.75,
-                colour = theme::hex(colour),
+    // Lengths written in CSS pixels at a 16 px body, in points at 11.
+    let pt = |pixels: f32| (pixels * 11. / 16. * 100.).round() / 100.;
+    // The code board's frame, and the band's rule (see `stylesheet`).
+    let (frame, band) = if palette.dark {
+        (
+            format!(
+                "(top: {}pt + accent, rest: {}pt + code-frame)",
+                pt(theme::CODE_TOP_EDGE),
+                pt(theme::CODE_FRAME_DARK)
             ),
-            None if level >= 6 => format!(
-                "#show heading.where(level: {level}): set text(size: {scale}em, weight: {weight:?}, fill: soft)\n"
-            ),
-            None => format!(
-                "#show heading.where(level: {level}): set text(size: {scale}em, weight: {weight:?})\n"
-            ),
-        }
+            "rule",
+        )
+    } else {
+        (
+            format!("{}pt + code-frame", pt(theme::CODE_FRAME_LIGHT)),
+            "rgb(0, 0, 0, 16%)",
+        )
     };
-    let headings: String = (1..=6).map(rule).collect();
+    let radius = if palette.dark { pt(10.) } else { pt(12.) };
+    let body_fonts = if palette.serif {
+        SERIF_FONTS
+    } else {
+        SANS_FONTS
+    };
     format!(
         "// smep: the {name} look. Save a copy as export.typ in smep's config directory to make it your own.\n\
 #let paper = rgb({paper:?})\n\
 #let ink = rgb({ink:?})\n\
 #let soft = rgb({soft:?})\n\
+#let faint = rgb({faint:?})\n\
 #let accent = rgb({accent:?})\n\
-#let surface = rgb({surface:?})\n\
+#let accent-soft = accent.transparentize({transparent}%)\n\
+#let wash = rgb({wash:?})\n\
 #let rule = rgb({line:?})\n\
+#let code-bg = rgb({code_bg:?})\n\
+#let code-surface = rgb({surface:?})\n\
+#let code-rail = rgb({rail:?})\n\
+#let code-frame = rgb({code_frame:?})\n\
+#let serif = ({serif_fonts})\n\
+#let mono = ({code_fonts})\n\
 #set page(paper: \"a4\", margin: 2cm, numbering: \"1\", fill: paper)\n\
 #set text(font: ({body_fonts}), size: 11pt, fill: ink)\n\
-#set par(justify: false, leading: 0.7em)\n\
-#show link: set text(fill: accent)\n\
-#show raw: set text(font: ({code_fonts}), size: {code}em)\n\
-#show raw.where(block: true): it => block(width: 100%, fill: surface, stroke: 0.5pt + rule, radius: 4pt, inset: 8pt, it)\n\
-#show raw.where(block: false): it => box(fill: surface, inset: (x: 3pt), outset: (y: 3pt), radius: 2pt, it)\n\
-{headings}\
-#show quote.where(block: true): it => block(width: 100%, fill: surface, stroke: (left: 2pt + accent), inset: (left: 1em, right: 1em, y: 0.6em), radius: (right: 4pt), text(fill: soft, it.body))\n\
-#set table(stroke: (x, y) => (bottom: 0.5pt + rule), fill: (x, y) => if y == 0 {{ ink }} else if calc.even(y) {{ surface }} else {{ none }}, inset: (x: 0.6em, y: 0.45em))\n\
-#show table: set text(size: 10pt)\n\
-#show table.cell.where(y: 0): set text(fill: paper, weight: \"semibold\")\n\
-#set line(stroke: 0.5pt + rule)\n",
+#set par(justify: true, leading: 0.85em, spacing: 1.3em)\n\
+#show link: it => underline(stroke: 0.5pt + accent-soft, offset: 2.5pt, text(fill: accent, it))\n\
+#show strong: it => highlight(fill: accent-soft, top-edge: 0.32em, bottom-edge: -0.18em, it)\n\
+#set strong(delta: 200)\n\
+#show raw: set text(font: mono, size: {code_size}pt)\n\
+#show raw.where(block: false): it => box(fill: code-bg, stroke: 0.5pt + rule, inset: (x: 3pt), outset: (y: 2.5pt), radius: 3pt, it)\n\
+#show raw.where(block: true): it => block(width: 100%, above: 1.4em, below: 1.4em, stroke: {frame}, radius: {radius}pt, clip: true, {{\n\
+  set block(spacing: 0pt)\n\
+  if it.lang != none {{\n\
+    block(width: 100%, fill: code-rail, inset: (x: 0.9em, y: 0.4em), stroke: (bottom: 0.5pt + {band}), box(fill: accent-soft, inset: (x: 0.4em, y: 0.15em), radius: 2.5pt, text(size: 0.75em, fill: accent, tracking: 0.08em, upper(it.lang))))\n\
+  }}\n\
+  block(width: 100%, fill: code-surface, inset: (x: 1.1em, y: 0.9em), {{ set par(justify: false, leading: 0.7em); it }})\n\
+}})\n\
+#show heading: set text(font: serif)\n\
+#show heading: set block(above: 1.8em, below: 0.9em)\n\
+#show heading.where(level: 1): set text(size: {h1}em, weight: \"bold\")\n\
+#show heading.where(level: 2): it => block(width: 100%, above: 1.8em, below: 0.9em, inset: (bottom: {gap}em), stroke: (bottom: 0.75pt + gradient.linear((rule, 0%), (rule, 30%), (paper, 85%), (paper, 100%))), text(size: {h2}em, weight: \"bold\", it.body))\n\
+#show heading.where(level: 3): it => block(above: 1.6em, below: 0.8em, text(size: {h3}em, weight: \"bold\")[#box(width: 0.46em, height: 0.46em, fill: accent, radius: 1pt, baseline: -0.12em)#h(0.55em)#it.body])\n\
+#show heading.where(level: 4): it => block(above: 1.4em, below: 0.7em, text(size: {h4}em, weight: \"semibold\", font: ({body_fonts}))[#box(width: 0.42em, height: 0.42em, stroke: 1pt + accent.transparentize(25%), radius: 1pt, baseline: -0.1em)#h(0.5em)#it.body])\n\
+#show heading.where(level: 5): set text(size: {h5}em, weight: \"semibold\", fill: soft, tracking: 0.04em, font: ({body_fonts}))\n\
+#show heading.where(level: 6): set text(size: {h5}em, weight: \"semibold\", fill: soft, tracking: 0.04em, font: ({body_fonts}))\n\
+#show quote.where(block: true): it => block(width: 100%, above: 1.4em, below: 1.4em, fill: wash, stroke: (left: 1.5pt + rule), inset: (left: 1em, right: 0.9em, y: 0.7em), radius: (right: 5.5pt), {{\n\
+  place(top + left, dx: -1.25em, dy: -1.05em, text(font: serif, size: 1.7em, fill: accent.transparentize(50%))[「])\n\
+  text(size: 0.97em, fill: soft, it.body)\n\
+}})\n\
+#set list(marker: text(fill: faint)[•])\n\
+#set table(stroke: (x, y) => if y == 0 {{ (bottom: 1.5pt + faint) }} else {{ (bottom: 0.5pt + rule) }}, inset: (x: 0.62em, y: 0.45em))\n\
+#show table: set text(size: 0.92em)\n\
+#show table: set par(justify: false)\n\
+#show table.cell.where(y: 0): set text(weight: \"semibold\")\n\
+#show image: it => box(stroke: 0.5pt + rule, radius: 5.5pt, clip: true, it)\n\
+#set line(stroke: 0.5pt + faint)\n\
+#show line: it => if it.length == 100% {{ align(center, line(length: 38%, stroke: 0.6pt + gradient.linear(paper, faint, paper))) }} else {{ it }}\n\
+#set footnote.entry(separator: line(length: 30%, stroke: 0.5pt + rule))\n",
         name = palette.name,
         paper = theme::hex(palette.background),
         ink = theme::hex(palette.foreground),
         soft = theme::hex(palette.muted),
+        faint = theme::hex(palette.faint),
         accent = theme::hex(palette.link),
-        surface = theme::hex(palette.code_background),
+        transparent = ((1. - palette.accent_soft().a) * 100.).round(),
+        wash = theme::hex(palette.wash),
         line = theme::hex(palette.border),
-        body_fonts = fonts(BODY_FONTS),
+        code_bg = theme::hex(palette.code_background),
+        surface = theme::hex(palette.code_surface),
+        rail = theme::hex(palette.code_rail),
+        code_frame = theme::hex(palette.code_frame),
+        serif_fonts = fonts(SERIF_FONTS),
         code_fonts = fonts(CODE_FONTS),
-        code = CODE_SCALE,
+        body_fonts = fonts(body_fonts),
+        // Typst sets raw text at 0.8 of its surroundings on its own, so the
+        // size is given outright: the body's 11 pt scaled.
+        code_size = (CODE_SCALE * 11. * 100.).round() / 100.,
+        h1 = theme::heading_scale(1),
+        h2 = theme::heading_scale(2),
+        h3 = theme::heading_scale(3),
+        h4 = theme::heading_scale(4),
+        h5 = theme::heading_scale(5),
+        gap = theme::HEADING_RULE_GAP,
     )
 }
 
@@ -794,26 +933,53 @@ mod tests {
         for line in [
             "#let paper = rgb(\"#f8f7f3\")",
             "#let ink = rgb(\"#1a1a18\")",
+            "#let faint = rgb(\"#97948c\")",
             "#let accent = rgb(\"#c3423f\")",
+            "#let accent-soft = accent.transparentize(87%)",
+            "#let wash = rgb(\"#f1efeb\")",
+            "#let code-surface = rgb(\"#fdfdfb\")",
+            "#let code-rail = rgb(\"#eceae4\")",
+            "#let code-frame = rgb(\"#cfccc4\")",
             "#set page(paper: \"a4\", margin: 2cm, numbering: \"1\", fill: paper)",
+            "#set text(font: (\"Segoe UI\",",
             "size: 11pt, fill: ink)",
-            "#show link: set text(fill: accent)",
-            "size: 0.9em)",
-            "#show heading.where(level: 1): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: 0.25em), stroke: (bottom: 1.5pt + rgb(\"#1a1a18\")), text(size: 1.62em, weight: \"bold\", it.body))",
-            "#show heading.where(level: 2): it => block(width: 100%, above: 1.4em, below: 0.9em, inset: (bottom: 0.25em), stroke: (bottom: 0.75pt + rgb(\"#e4e1da\")), text(size: 1.46em, weight: \"semibold\", it.body))",
-            "#show heading.where(level: 3): set text(size: 1.2em, weight: \"semibold\")",
-            "#show heading.where(level: 6): set text(size: 0.92em, weight: \"semibold\", fill: soft)",
-            "#show table.cell.where(y: 0): set text(fill: paper, weight: \"semibold\")",
-            "#set line(stroke: 0.5pt + rule)",
-            "\"Noto Serif\", \"Georgia\"",
+            "text(fill: accent, it)",
+            "#show raw: set text(font: mono, size: 9.35pt)",
+            // The whiteboard: a thick frame, the band naming the language.
+            "stroke: 3.44pt + code-frame, radius: 8.25pt, clip: true",
+            "if it.lang != none {",
+            "upper(it.lang)",
+            "#show heading: set text(font: serif)",
+            "#show heading.where(level: 1): set text(size: 1.62em, weight: \"bold\")",
+            "inset: (bottom: 0.5em), stroke: (bottom: 0.75pt + gradient.linear((rule, 0%), (rule, 30%), (paper, 85%), (paper, 100%))), text(size: 1.46em, weight: \"bold\", it.body))",
+            "text(size: 1.2em, weight: \"bold\")[#box(width: 0.46em, height: 0.46em, fill: accent",
+            "stroke: 1pt + accent.transparentize(25%)",
+            "#show heading.where(level: 6): set text(size: 0.92em, weight: \"semibold\", fill: soft",
+            "fill: wash, stroke: (left: 1.5pt + rule)",
+            "[「]",
+            "if y == 0 { (bottom: 1.5pt + faint) } else { (bottom: 0.5pt + rule) }",
+            "#show table.cell.where(y: 0): set text(weight: \"semibold\")",
+            "align(center, line(length: 38%",
         ] {
             assert!(text.contains(line), "{line:?} missing from {text}");
         }
         // The dark paper prints as itself only when asked for by name; the
-        // export takes the family's light theme (`print_palette`).
+        // export takes the family's light theme (`print_palette`). Its code
+        // board is a hairline with the accent along the top.
         let dark = preamble(&PreviewTheme::PaperDark.palette().unwrap());
         assert!(dark.contains("#let paper = rgb(\"#121212\")"));
+        assert!(dark.contains("#let accent-soft = accent.transparentize(85%)"));
+        assert!(
+            dark.contains(
+                "stroke: (top: 1.38pt + accent, rest: 0.69pt + code-frame), radius: 6.88pt"
+            )
+        );
         assert!(dark.starts_with("// smep: the Paper Dark look."));
+        let sepia = preamble(&PreviewTheme::Sepia.palette().unwrap());
+        assert!(
+            sepia.contains("#set text(font: (\"Noto Serif\","),
+            "Sepia is serif"
+        );
     }
 
     #[test]
@@ -821,27 +987,72 @@ mod tests {
         let css = stylesheet(&paper());
         assert!(css.starts_with("/* smep: the Paper look."), "{css}");
         for line in [
-            ":root{color-scheme:light;--paper:#f8f7f3;--ink:#1a1a18;--soft:#5d5b55;--accent:#c3423f;--surface:#f4f2ee;--line:#e4e1da}",
-            "h1{font-size:1.62em;font-weight:700;color:#1a1a18;padding-bottom:0.25em;border-bottom:2px solid #1a1a18}",
-            "h2{font-size:1.46em;font-weight:600;color:#1a1a18;padding-bottom:0.25em;border-bottom:1px solid #e4e1da}",
-            "h3{font-size:1.2em;font-weight:600;color:#1a1a18;}",
-            "h6{font-size:0.92em;font-weight:600;color:#5d5b55;}",
-            "th{background:var(--ink);color:var(--paper);font-weight:600}",
-            "tr:nth-child(even) td{background:var(--surface)}",
-            "blockquote{padding:.5em 1em;color:var(--soft);background:var(--surface);border-left:3px solid var(--accent)",
-            "pre{background:var(--surface);border:1px solid var(--line);border-radius:8px",
-            "font-size:0.9em}",
-            "img{max-width:100%;height:auto;display:block;margin:1em auto;border-radius:6px}",
-            ".footnotes{",
+            ":root{color-scheme:light;--paper:#f8f7f3;--paper-dim:#f1efeb;--ink:#1a1a18;--ink-soft:#5d5b55;--ink-faint:#97948c;--line:#e4e1da;--accent:#c3423f;--accent-soft:#c3423f21;--code-bg:#f4f2ee;--code-surface:#fdfdfb;--code-head-bg:#eceae4;--code-frame:#cfccc4;--font-body:-apple-system,",
+            "h1{font-family:var(--font-serif);font-size:1.62rem;",
+            "h2{font-family:var(--font-serif);font-size:1.46rem;letter-spacing:.02em;margin:3rem 0 1.05rem;padding-bottom:0.5rem;background:linear-gradient(to right,var(--line) 0%,var(--line) 30%,transparent 85%) bottom/100% 1px no-repeat}",
+            "h3::before{content:'';display:inline-block;width:.46em;height:.46em;background:var(--accent)",
+            "h4::before{content:'';display:inline-block;width:.42em;height:.42em;border:1.5px solid var(--accent)",
+            "h5,h6{font-size:0.92rem;font-weight:600;color:var(--ink-soft)",
+            "strong{font-weight:600;background:linear-gradient(transparent 62%,var(--accent-soft) 62%)}",
+            "blockquote{position:relative;margin:1.5rem 0;padding:.8rem 1.2rem .8rem 1.3rem;background:var(--paper-dim);border-left:2px solid var(--line)",
+            "blockquote::before{content:'「'",
+            "hr{border:none;height:1px;margin:2.6rem auto;width:38%",
+            "th{border:none;border-bottom:2px solid var(--ink-faint)",
+            "td{border:none;border-bottom:1px solid var(--line)",
+            "code{font-size:.86em;background:var(--code-bg);border:1px solid var(--line);border-radius:5px",
+            "pre code{background:none;border:none;padding:0;font-size:0.85rem}",
+            "line-height:1.7;",
+            // The whiteboard.
+            ".code{margin:1.6rem 0;border:5px solid var(--code-frame);border-radius:12px;",
+            ".code-lang{text-transform:uppercase;letter-spacing:.08em;color:var(--accent);background:var(--accent-soft)",
+            "img{max-width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}",
+            "li::marker{color:var(--ink-faint)}",
+            ".footnotes{margin-top:3rem;border-top:1px solid var(--line)",
             "@media print{",
         ] {
             assert!(css.contains(line), "{line:?} missing from {css}");
         }
-        assert!(css.contains("sans-serif"), "Paper is sans");
+        assert!(css.contains("--font-body:-apple-system,"), "Paper is sans");
         let sepia = stylesheet(&PreviewTheme::Sepia.palette().unwrap());
-        assert!(sepia.contains("Georgia,'Noto Serif'"), "Sepia is serif");
+        assert!(
+            sepia.contains("--font-body:'Noto Serif SC'"),
+            "Sepia is serif"
+        );
         let dark = stylesheet(&PreviewTheme::PaperDark.palette().unwrap());
-        assert!(dark.contains("color-scheme:dark;--paper:#121212;--ink:#c1bfba"));
+        assert!(
+            dark.contains("color-scheme:dark;--paper:#121212;--paper-dim:#171716;--ink:#c1bfba")
+        );
+        assert!(dark.contains("--accent-soft:#dd625e26"));
+        // On dark paper the board is a hairline with the accent along its top.
+        assert!(dark.contains(
+            ".code{margin:1.6rem 0;border:1px solid var(--code-frame);border-top:2px solid var(--accent);border-radius:10px"
+        ));
+    }
+
+    #[test]
+    fn code_blocks_become_boards_and_raw_pre_is_left_alone() {
+        assert_eq!(
+            code_boards("<p>a</p>\n<pre><code class=\"language-rust\">fn x() {}\n</code></pre>\n"),
+            "<p>a</p>\n<figure class=\"code\"><div class=\"code-head\"><span class=\"code-lang\">rust</span></div><pre><code class=\"language-rust\">fn x() {}\n</code></pre></figure>\n"
+        );
+        assert_eq!(
+            code_boards("<pre><code>x\n</code></pre>"),
+            "<figure class=\"code code-plain\"><pre><code>x\n</code></pre></figure>"
+        );
+        // A raw <pre><code> that closes another way is not wrapped, and the
+        // block after it still is.
+        assert_eq!(
+            code_boards("<pre><code>raw</code>\n</pre>\n<pre><code>y</code></pre>"),
+            "<pre><code>raw</code>\n</pre>\n<figure class=\"code code-plain\"><pre><code>y</code></pre></figure>"
+        );
+        assert_eq!(code_boards("<pre><code>open"), "<pre><code>open");
+        assert_eq!(code_boards(""), "");
+        // Through the whole page, and the escaped language stays escaped.
+        let html = to_html("```c&d\nint x;\n```\n", "T", "");
+        assert!(
+            html.contains("<span class=\"code-lang\">c&amp;d</span></div><pre><code class=\"language-c&amp;d\">int x;\n</code></pre></figure>"),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1003,6 +1214,11 @@ mod tests {
             "\\#\\$\\@\\/\\/\\~\\'",
             "<b>= html</b>",
             "#### four\n\n##### five\n\n###### six\n\n> # heading in a quote\n\n| only header |\n|---|\n",
+            "```\n```\n",
+            "```x\n```\n",
+            "```\n\n```\n",
+            "> ```rust\n> fn x() {}\n> ```\n",
+            "- ###### deep\n  ```\n  y\n  ```\n",
         ] {
             let result = pdf(markdown, None);
             assert!(result.is_ok(), "{markdown:?}: {:?}", result.err());
@@ -1012,12 +1228,16 @@ mod tests {
     #[cfg(feature = "pdf-export")]
     #[test]
     fn every_palette_typesets_a_document() {
-        let markdown = "# T\n\n## S\n\n> q\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n```\nx\n```\n\n---\n\n[l](https://x.y) and `c`.\n";
+        // Every rule of the preamble meets its construct: the headings with
+        // their marks, both code boards, a nested quote, the list markers,
+        // bold, a footnote, an image in its frame, the section break.
+        let markdown = "# T\n\n## S\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\n> q\n>\n> > nested\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n```\nx\n```\n\n```rust\nfn main() {}\n```\n\n---\n\n- one\n  - two\n1. first\n\n[l](https://x.y), **bold**, `c`, note[^1] and ![icon](smep-256.png)\n\n[^1]: The note.\n";
+        let icons = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icon");
         for theme in crate::theme::ALL {
             let Some(palette) = theme.palette() else {
                 continue;
             };
-            let result = to_pdf(markdown, None, &preamble(&palette));
+            let result = to_pdf(markdown, Some(&icons), &preamble(&palette));
             assert!(result.is_ok(), "{theme:?}: {:?}", result.err());
         }
     }

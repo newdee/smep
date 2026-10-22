@@ -179,18 +179,76 @@ fn name_for(node: &Node, parent: Option<&'static str>) -> Option<&'static str> {
 ///
 /// The preview renders one list item per top-level block, so this maps an
 /// editor line to the preview item that holds it.
+#[cfg(test)]
 pub fn block_start_lines(text: &str) -> Vec<usize> {
+    outline(text).0
+}
+
+/// A heading, as the outline lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heading {
+    /// 1 to 6.
+    pub level: u8,
+    /// Its text, marks removed.
+    pub title: String,
+    /// Its 0-based line in the source.
+    pub line: usize,
+    /// The top-level block it is in: itself, or the quote or list holding it.
+    pub block: usize,
+}
+
+/// What one parse of `text` says about its shape: the start line of every
+/// top-level block (see [`block_start_lines`]) and every heading, in
+/// document order. One parse, because a whole-document parse is the
+/// expensive part of either.
+pub fn outline(text: &str) -> (Vec<usize>, Vec<Heading>) {
     let Ok(root) = markdown::to_mdast(text, &ParseOptions::gfm()) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    root.children()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| block.position().map(|p| p.start.line - 1))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut lines = Vec::new();
+    let mut headings = Vec::new();
+    for block in root.children().map(Vec::as_slice).unwrap_or_default() {
+        let Some(position) = block.position() else {
+            continue;
+        };
+        lines.push(position.start.line - 1);
+        collect_headings(block, lines.len() - 1, &mut headings);
+    }
+    (lines, headings)
+}
+
+fn collect_headings(node: &Node, block: usize, out: &mut Vec<Heading>) {
+    if let Node::Heading(heading) = node {
+        if let Some(position) = &heading.position {
+            out.push(Heading {
+                level: heading.depth,
+                title: plain_text(node)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                line: position.start.line - 1,
+                block,
+            });
+        }
+        return;
+    }
+    for child in node.children().map(Vec::as_slice).unwrap_or_default() {
+        collect_headings(child, block, out);
+    }
+}
+
+/// The text of a node, marks removed.
+fn plain_text(node: &Node) -> String {
+    match node {
+        Node::Text(text) => text.value.clone(),
+        Node::InlineCode(code) => code.value.clone(),
+        Node::InlineMath(math) => math.value.clone(),
+        Node::Image(image) => image.alt.clone(),
+        _ => node
+            .children()
+            .map(|children| children.iter().map(plain_text).collect())
+            .unwrap_or_default(),
+    }
 }
 
 /// The byte range of every top-level block, in document order. Blank lines
@@ -328,6 +386,29 @@ mod tests {
         );
         assert_eq!(block_start_lines("a\r\n\r\nb"), vec![0, 2]);
         assert!(block_start_lines("").is_empty());
+    }
+
+    #[test]
+    fn the_outline_is_every_heading_with_its_line_and_block() {
+        let text = "# One *em* `code`\n\npara\n\nTwo\n===\n\n> ## In a quote\n\n- ### In a list\n\n```\n# not a heading\n```\n\n######   Six   spaced  \n";
+        let (blocks, headings) = outline(text);
+        assert_eq!(blocks, block_start_lines(text));
+        let found: Vec<(u8, &str, usize, usize)> = headings
+            .iter()
+            .map(|h| (h.level, h.title.as_str(), h.line, h.block))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, "One em code", 0, 0),
+                (1, "Two", 4, 2),
+                (2, "In a quote", 7, 3),
+                (3, "In a list", 9, 4),
+                (6, "Six spaced", 15, 6),
+            ]
+        );
+        assert_eq!(outline(""), (Vec::new(), Vec::new()));
+        assert!(outline("no headings\n").1.is_empty());
     }
 
     #[test]

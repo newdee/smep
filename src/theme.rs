@@ -8,17 +8,21 @@
 //!
 //! The rendered Markdown can wear a look of its own, a [`PreviewTheme`];
 //! by default it follows the application. Whatever the colours, the type is
-//! one design: the blog's heading scale with a rule under the first two
-//! levels, its paragraph gap, a framed code block, a table with a filled
-//! header row. The same design dresses the window
-//! ([`Palette::text_view_style`]), the exported HTML page and the PDF
-//! (`export::stylesheet`, `export::preamble`).
+//! one design, the blog's article page: its heading scale (a fading rule
+//! under h2, a cinnabar square before h3 and h4), its paragraph gap, code
+//! on a board (a thick frame on light paper, a thin one with a cinnabar top
+//! edge on dark, the language in a cinnabar tab), tables ruled across with
+//! a heavier line under the header, quotes on a wash. The same design
+//! dresses the window ([`Palette::text_view_style`]), the exported HTML page
+//! and the PDF (`export::stylesheet`, `export::preamble`); the window draws
+//! what its renderer has a hook for.
 
 use gpui_kit::App;
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::component::{Theme, ThemeRegistry};
 use gpui_kit::{
-    FontWeight, HighlightStyle, Hsla, Pixels, Rgba, StyleRefinement, Styled as _, px, rems, rgb,
+    BoxShadow, FontWeight, HighlightStyle, Hsla, Pixels, Rgba, StyleRefinement, Styled as _, hsla,
+    px, rems, rgb,
 };
 use serde::{Deserialize, Serialize};
 
@@ -79,16 +83,35 @@ pub const ALL: [PreviewTheme; 9] = [
     PreviewTheme::SolarizedDark,
 ];
 
-/// The colours and type of one theme.
+/// The colours and type of one theme, named after the blog's tokens where
+/// they differ from the obvious.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     /// The theme's name, for the comment at the top of a stylesheet.
     pub name: &'static str,
+    /// The paper.
     pub background: Hsla,
+    /// The ink.
     pub foreground: Hsla,
+    /// Soft ink: quotes, the smallest headings.
     pub muted: Hsla,
+    /// Faint ink: list markers, the rule under a table's header, the
+    /// section break.
+    pub faint: Hsla,
+    /// The accent: links, the marks before h3 and h4, the code tab.
     pub link: Hsla,
+    /// A shade under the paper: the quote's wash.
+    pub wash: Hsla,
+    /// Inline code's background.
     pub code_background: Hsla,
+    /// The code board's surface.
+    pub code_surface: Hsla,
+    /// The code board's frame.
+    pub code_frame: Hsla,
+    /// The band along the top of a code board (the surface itself on dark
+    /// paper, where the band melts into the board).
+    pub code_rail: Hsla,
+    /// Hairlines: table rows, the quote's edge, the rule under h2.
     pub border: Hsla,
     pub serif: bool,
     pub dark: bool,
@@ -100,16 +123,22 @@ const HEADING_SCALE: [f32; 6] = [1.62, 1.46, 1.2, 1.02, 0.92, 0.92];
 /// The blog's gap between paragraphs, in rems of the body size.
 const PARAGRAPH_GAP: f32 = 0.95;
 
-/// Code, inline and in blocks, as a factor of the body size.
-pub const CODE_SCALE: f32 = 0.9;
+/// Code in blocks, as a factor of the body size.
+pub const CODE_SCALE: f32 = 0.85;
 
-/// What is drawn under a heading: a rule of this many pixels (at 16 px of
-/// body text) in this colour.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rule {
-    pub width: f32,
-    pub colour: Hsla,
-}
+/// Code's line height in blocks.
+pub const CODE_LEADING: f32 = 1.7;
+
+/// The room between h2's text and the rule under it, in rems.
+pub const HEADING_RULE_GAP: f32 = 0.5;
+
+/// The code board's frame, in pixels at 16 px of body text: thick on light
+/// paper (a whiteboard's aluminium edge), a hairline on dark.
+pub const CODE_FRAME_LIGHT: f32 = 5.;
+pub const CODE_FRAME_DARK: f32 = 1.;
+
+/// The cinnabar top edge of a code board on dark paper, in pixels.
+pub const CODE_TOP_EDGE: f32 = 2.;
 
 impl PreviewTheme {
     pub fn label(self) -> &'static str {
@@ -163,28 +192,40 @@ impl PreviewTheme {
         let name = self.label();
         Some(match self {
             Self::System => return None,
-            // The blog's light paper: ink #1a1a18 on #f8f7f3, soft ink for
-            // quotes, cinnabar links, the code surface a shade down.
+            // The blog's light paper (src/styles/tokens.css): ink #1a1a18
+            // on #f8f7f3, cinnabar, code on a whiteboard in an aluminium
+            // frame under a grey band.
             Self::Paper => Palette {
                 name,
                 background: hex(0xf8f7f3),
                 foreground: hex(0x1a1a18),
                 muted: hex(0x5d5b55),
+                faint: hex(0x97948c),
                 link: hex(0xc3423f),
+                wash: hex(0xf1efeb),
                 code_background: hex(0xf4f2ee),
+                code_surface: hex(0xfdfdfb),
+                code_frame: hex(0xcfccc4),
+                code_rail: hex(0xeceae4),
                 border: hex(0xe4e1da),
                 serif: false,
                 dark: false,
             },
             // The blog's dark paper: ink #c1bfba on #121212, a brighter
-            // cinnabar so links clear AA.
+            // cinnabar so links clear AA, the code board's band melted into
+            // the board.
             Self::PaperDark => Palette {
                 name,
                 background: hex(0x121212),
                 foreground: hex(0xc1bfba),
                 muted: hex(0xa5a29a),
+                faint: hex(0x87837b),
                 link: hex(0xdd625e),
+                wash: hex(0x171716),
                 code_background: hex(0x191918),
+                code_surface: hex(0x171716),
+                code_frame: hex(0x2b2a28),
+                code_rail: hex(0x171716),
                 border: hex(0x2b2a28),
                 serif: false,
                 dark: true,
@@ -194,8 +235,13 @@ impl PreviewTheme {
                 background: hex(0xffffff),
                 foreground: hex(0x1f2328),
                 muted: hex(0x59636e),
+                faint: hex(0x818b98),
                 link: hex(0x0969da),
+                wash: hex(0xf6f8fa),
                 code_background: hex(0xf6f8fa),
+                code_surface: hex(0xf6f8fa),
+                code_frame: hex(0xd1d9e0),
+                code_rail: hex(0xeaeef2),
                 border: hex(0xd1d9e0),
                 serif: false,
                 dark: false,
@@ -205,8 +251,13 @@ impl PreviewTheme {
                 background: hex(0xf3f2ee),
                 foreground: hex(0x1f0909),
                 muted: hex(0x6a6560),
+                faint: hex(0x9a958f),
                 link: hex(0x8b3a10),
+                wash: hex(0xebeae5),
                 code_background: hex(0xe7e6e1),
+                code_surface: hex(0xf9f8f5),
+                code_frame: hex(0xc9c8c3),
+                code_rail: hex(0xe7e6e1),
                 border: hex(0xc9c8c3),
                 serif: true,
                 dark: false,
@@ -216,8 +267,13 @@ impl PreviewTheme {
                 background: hex(0x363b40),
                 foreground: hex(0xd9d9d9),
                 muted: hex(0x9aa0a6),
+                faint: hex(0x7d848b),
                 link: hex(0x7fb2f0),
+                wash: hex(0x30353a),
                 code_background: hex(0x2b2f33),
+                code_surface: hex(0x2e3236),
+                code_frame: hex(0x4b5259),
+                code_rail: hex(0x2e3236),
                 border: hex(0x4b5259),
                 serif: false,
                 dark: true,
@@ -227,8 +283,13 @@ impl PreviewTheme {
                 background: hex(0xf4ecd8),
                 foreground: hex(0x5b4636),
                 muted: hex(0x8b7355),
+                faint: hex(0xa8916f),
                 link: hex(0x9c5a1e),
+                wash: hex(0xede3cb),
                 code_background: hex(0xeadfc3),
+                code_surface: hex(0xfaf4e6),
+                code_frame: hex(0xd0bf98),
+                code_rail: hex(0xeadfc3),
                 border: hex(0xd9c9a3),
                 serif: true,
                 dark: false,
@@ -238,8 +299,13 @@ impl PreviewTheme {
                 background: hex(0xfdf6e3),
                 foreground: hex(0x586e75),
                 muted: hex(0x93a1a1),
+                faint: hex(0xa3aea9),
                 link: hex(0x268bd2),
+                wash: hex(0xf5eedb),
                 code_background: hex(0xeee8d5),
+                code_surface: hex(0xfffbf0),
+                code_frame: hex(0xd6cfb8),
+                code_rail: hex(0xeee8d5),
                 border: hex(0xd6cfb8),
                 serif: false,
                 dark: false,
@@ -249,8 +315,13 @@ impl PreviewTheme {
                 background: hex(0x002b36),
                 foreground: hex(0x93a1a1),
                 muted: hex(0x657b83),
+                faint: hex(0x586e75),
                 link: hex(0x268bd2),
+                wash: hex(0x03313d),
                 code_background: hex(0x073642),
+                code_surface: hex(0x01303b),
+                code_frame: hex(0x0f4a5a),
+                code_rail: hex(0x01303b),
                 border: hex(0x0f4a5a),
                 serif: false,
                 dark: true,
@@ -273,24 +344,23 @@ impl PreviewTheme {
 }
 
 impl Palette {
-    /// The application theme's colours as a palette, so the preview that
-    /// follows the application is styled the same way as a fixed theme.
+    /// The palette of the preview that follows the application: the
+    /// application wears Paper, so it is Paper or Paper Dark with the mode.
     pub fn from_app(theme: &Theme) -> Self {
-        Self {
-            name: if theme.mode.is_dark() {
-                PAPER_DARK
-            } else {
-                PAPER_LIGHT
-            },
-            background: theme.background,
-            foreground: theme.foreground,
-            muted: theme.muted_foreground,
-            link: theme.link,
-            code_background: theme.accent,
-            border: theme.border,
-            serif: false,
-            dark: theme.mode.is_dark(),
-        }
+        let paper = if theme.mode.is_dark() {
+            PreviewTheme::PaperDark
+        } else {
+            PreviewTheme::Paper
+        };
+        paper.palette().expect("Paper has a fixed palette")
+    }
+
+    /// The accent, washed out: the code tab's ground, the mark under bold
+    /// text on a page.
+    pub fn accent_soft(&self) -> Hsla {
+        let mut soft = self.link;
+        soft.a = if self.dark { 0.15 } else { 0.13 };
+        soft
     }
 
     /// The rich-text style for this palette, for text of `body` size: the
@@ -299,12 +369,15 @@ impl Palette {
         let mut selection = self.link;
         selection.a = 0.3;
         let palette = *self;
+        let scale = f32::from(body) / 16.;
         TextViewStyle::default()
             .with_foreground(self.foreground)
             .with_muted_foreground(self.muted)
             .with_link(self.link)
             .with_selection(selection)
-            .with_code_background(self.code_background)
+            // The code board's surface: the renderer also paints the code
+            // tab's corner (`rendered::code_block_actions`) with it.
+            .with_code_background(self.code_surface)
             .with_border(self.border)
             .with_inline_code(HighlightStyle {
                 background_color: Some(self.code_background),
@@ -313,86 +386,95 @@ impl Palette {
             })
             .with_paragraph_gap(rems(PARAGRAPH_GAP))
             .with_heading(move |level| palette.heading_style(body, level))
-            // A fenced block sits in a thin frame with rounded corners, its
-            // code a shade smaller than the text.
-            .with_code_block(
-                StyleRefinement::default()
-                    .border_1()
-                    .border_color(self.border)
-                    .rounded(px(8.))
-                    .px(rems(1.))
-                    .py(rems(0.75))
-                    .text_size(body * CODE_SCALE),
-            )
-            // A table is framed, its header row filled with ink and set in
-            // paper, its rows ruled across (no column lines). The table's
-            // surface is the paper (the renderer's default is its own
-            // theme's, which does not follow a fixed preview theme).
-            .with_table(
-                StyleRefinement::default()
-                    .bg(self.background)
-                    .border_1()
-                    .border_color(self.border)
-                    .rounded(px(6.)),
-            )
+            .with_code_block(self.code_board(body))
+            // A table is ruled across, never framed or divided into
+            // columns, on the paper (the renderer's default surface is its
+            // own theme's, which does not follow a fixed preview theme).
+            .with_table(StyleRefinement::default().bg(self.background).border_0())
             // No column lines: the renderer draws them in the cell's border
             // colour (on the slack beside each cell), so that colour is none.
             .with_table_cell(
                 StyleRefinement::default()
                     .border_r_0()
                     .border_color(gpui_kit::transparent_black())
-                    .px_3()
-                    .py_2(),
+                    .px(body * 0.9)
+                    .py(body * 0.42),
             )
+            // The header row is set heavier over a heavier rule, unfilled.
             .with_table_head(
                 StyleRefinement::default()
-                    .bg(self.foreground)
-                    .text_color(self.background)
+                    .bg(gpui_kit::transparent_black())
+                    .border_b(px(2. * scale))
+                    .border_color(self.faint)
+                    .text_color(self.foreground)
                     .font_weight(FontWeight::SEMIBOLD),
             )
             .with_dark(self.dark)
     }
 
+    /// A fenced code block: the board, with room along its top for the tab
+    /// that names the language. On light paper a whiteboard, a thick frame
+    /// with a faint shadow and a slightly sunken surface; on dark paper a
+    /// hairline frame whose top edge is a line of the accent.
+    pub fn code_board(&self, body: Pixels) -> StyleRefinement {
+        let scale = f32::from(body) / 16.;
+        let board = StyleRefinement::default()
+            .bg(self.code_surface)
+            .border_color(self.code_frame)
+            .pt(body * 2.4)
+            .pb(body)
+            .px(body * 1.2)
+            .text_size(body * CODE_SCALE)
+            .line_height(gpui_kit::relative(CODE_LEADING));
+        if self.dark {
+            let frame = px(CODE_FRAME_DARK * scale);
+            board
+                .border_t(px(0.))
+                .border_r(frame)
+                .border_b(frame)
+                .border_l(frame)
+                .rounded(px(10. * scale))
+                .shadow(vec![
+                    BoxShadow::new(px(0.), px(CODE_TOP_EDGE * scale), self.link).inset(),
+                ])
+        } else {
+            board
+                .border(px(CODE_FRAME_LIGHT * scale))
+                .rounded(px(12. * scale))
+                .shadow(vec![
+                    BoxShadow::new(px(0.), px(0.), hsla(0., 0., 0., 0.08)).spread_radius(px(1.)),
+                    BoxShadow::new(px(0.), px(2. * scale), hsla(60. / 360., 0.04, 0.1, 0.06))
+                        .blur_radius(px(8. * scale)),
+                    BoxShadow::new(px(0.), px(2. * scale), hsla(0., 0., 0., 0.07))
+                        .blur_radius(px(6. * scale))
+                        .inset(),
+                ])
+        }
+    }
+
     /// A heading of `level` for text of `body` size: its size on the scale,
-    /// its weight (the first level bold, the rest semibold), its colour (the
-    /// smallest in the muted ink), and the rule under it where there is one.
+    /// its weight (bold to h3, semibold below), its colour (h5 and h6 in
+    /// the soft ink), and under h2 a hairline.
     pub fn heading_style(&self, body: Pixels, level: u8) -> StyleRefinement {
         let size = body * heading_scale(level);
-        let mut style = StyleRefinement::default()
+        let style = StyleRefinement::default()
             .text_size(size)
             .font_weight(heading_weight(level))
-            .text_color(if level >= 6 {
+            .text_color(if level >= 5 {
                 self.muted
             } else {
                 self.foreground
             });
-        if let Some(rule) = self.heading_rule(level) {
-            // The rule sits under the text, and the gap the renderer gives a
-            // heading (0.35 of its size) moves below the rule.
-            style = style
-                .pb(size * HEADING_RULE_GAP)
-                .border_b(px(rule.width * f32::from(body) / 16.))
-                .border_color(rule.colour)
-                .mb(size * 0.35);
+        if level != 2 {
+            return style;
         }
+        // The rule sits under the text, and the gap the renderer gives a
+        // heading (0.35 of its size) moves below the rule.
         style
-    }
-
-    /// The rule under a heading of `level`: a 2 px line of ink under the
-    /// first level, a 1 px line in the border colour under the second,
-    /// nothing under the rest.
-    pub fn heading_rule(&self, level: u8) -> Option<Rule> {
-        match level {
-            1 => Some(Rule {
-                width: 2.,
-                colour: self.foreground,
-            }),
-            2 => Some(Rule {
-                width: 1.,
-                colour: self.border,
-            }),
-            _ => None,
-        }
+            .pb(body * HEADING_RULE_GAP)
+            .border_b(px(f32::from(body) / 16.))
+            .border_color(self.border)
+            .mb(size * 0.35)
     }
 
     /// The body font family, or `None` to keep the application's.
@@ -415,16 +497,12 @@ pub fn heading_scale(level: u8) -> f32 {
 
 /// The weight of a heading of `level`.
 pub fn heading_weight(level: u8) -> FontWeight {
-    if level <= 1 {
+    if level <= 3 {
         FontWeight::BOLD
     } else {
         FontWeight::SEMIBOLD
     }
 }
-
-/// The room between a heading's text and the rule under it, as a factor of
-/// the heading's size.
-pub const HEADING_RULE_GAP: f32 = 0.25;
 
 /// A colour as CSS and Typst write it: `#rrggbb`.
 pub fn hex(colour: Hsla) -> String {
@@ -509,31 +587,54 @@ mod tests {
                 "out of range"
             );
             assert_eq!(heading(1).text.font_weight, Some(FontWeight::BOLD));
-            assert_eq!(heading(2).text.font_weight, Some(FontWeight::SEMIBOLD));
-            // A rule under the first two levels, ink then the border colour,
-            // the gap below moved under the rule; none under the third.
-            assert_eq!(heading(1).border_widths.bottom, Some(px(2.).into()));
-            assert_eq!(heading(1).border_color, Some(palette.foreground));
-            assert_eq!(
-                heading(1).margin.bottom,
-                Some((px(16.) * 1.62 * 0.35).into())
-            );
+            assert_eq!(heading(3).text.font_weight, Some(FontWeight::BOLD));
+            assert_eq!(heading(4).text.font_weight, Some(FontWeight::SEMIBOLD));
+            // A hairline under h2 only, the gap below moved under it.
+            assert_eq!(heading(1).border_widths.bottom, None);
             assert_eq!(heading(2).border_widths.bottom, Some(px(1.).into()));
             assert_eq!(heading(2).border_color, Some(palette.border));
+            assert_eq!(heading(2).padding.bottom, Some((px(16.) * 0.5).into()));
+            assert_eq!(
+                heading(2).margin.bottom,
+                Some((px(16.) * 1.46 * 0.35).into())
+            );
             assert_eq!(heading(3).border_widths.bottom, None);
             assert_eq!(heading(3).margin.bottom, None);
-            assert_eq!(heading(3).text.color, Some(palette.foreground));
+            assert_eq!(heading(4).text.color, Some(palette.foreground));
+            assert_eq!(heading(5).text.color, Some(palette.muted));
             assert_eq!(heading(6).text.color, Some(palette.muted));
 
-            assert_eq!(style.code_block().border_widths.top, Some(px(1.).into()));
+            // Code on a board: the surface, the frame's colour, a smaller
+            // size, the room for the tab along the top.
+            let board = style.code_block();
             assert_eq!(
-                style.code_block().corner_radii.top_left,
-                Some(px(8.).into())
+                board.background,
+                Some(gpui_kit::Fill::Color(palette.code_surface.into()))
             );
+            assert_eq!(style.code_background(), palette.code_surface);
+            assert_eq!(board.border_color, Some(palette.code_frame));
+            assert_eq!(board.text.font_size, Some((px(16.) * 0.85).into()));
+            assert_eq!(board.padding.top, Some((px(16.) * 2.4).into()));
+            if palette.dark {
+                // A hairline frame, its top edge a line of the accent.
+                assert_eq!(board.border_widths.left, Some(px(1.).into()));
+                assert_eq!(board.border_widths.top, Some(px(0.).into()));
+                let edge = board.box_shadow.as_ref().unwrap();
+                assert_eq!(edge.len(), 1, "{theme:?}");
+                assert!(edge[0].inset);
+                assert_eq!(edge[0].offset.y, px(2.));
+                assert_eq!(edge[0].color, palette.link, "{theme:?}");
+            } else {
+                // A whiteboard's thick frame.
+                assert_eq!(board.border_widths.top, Some(px(5.).into()));
+                assert_eq!(board.corner_radii.top_left, Some(px(12.).into()));
+                assert_eq!(board.box_shadow.as_ref().map(Vec::len), Some(3));
+            }
             assert_eq!(
-                style.code_block().text.font_size,
-                Some((px(16.) * 0.9).into())
+                style.inline_code().background_color,
+                Some(palette.code_background)
             );
+
             assert_eq!(style.table_cell().border_widths.right, Some(px(0.).into()));
             assert_eq!(
                 style.table_cell().border_color,
@@ -545,18 +646,20 @@ mod tests {
                 Some(gpui_kit::Fill::Color(palette.background.into())),
                 "{theme:?}: the table surface is the paper"
             );
-            assert_eq!(style.table().border_widths.top, Some(px(1.).into()));
+            assert_eq!(style.table().border_widths.top, Some(px(0.).into()));
             assert_eq!(
                 style.table_head().background,
-                Some(gpui_kit::Fill::Color(palette.foreground.into())),
-                "{theme:?}: the header row is filled with ink"
+                Some(gpui_kit::Fill::Color(gpui_kit::transparent_black().into())),
+                "{theme:?}: the header row is not filled"
             );
-            assert_eq!(style.table_head().text.color, Some(palette.background));
+            assert_eq!(style.table_head().border_widths.bottom, Some(px(2.).into()));
+            assert_eq!(style.table_head().border_color, Some(palette.faint));
+            assert_eq!(style.table_head().text.color, Some(palette.foreground));
             assert_eq!(style.foreground(), palette.foreground);
             assert_eq!(style.link(), palette.link);
             assert_eq!(style.is_dark(), palette.dark);
         }
-        // A bigger body scales the headings and the rule with it.
+        // A bigger body scales the headings, the rule and the frame with it.
         let style = PreviewTheme::Paper
             .palette()
             .unwrap()
@@ -565,7 +668,8 @@ mod tests {
             style.heading(1).text.font_size,
             Some((px(32.) * 1.62).into())
         );
-        assert_eq!(style.heading(1).border_widths.bottom, Some(px(4.).into()));
+        assert_eq!(style.heading(2).border_widths.bottom, Some(px(2.).into()));
+        assert_eq!(style.code_block().border_widths.top, Some(px(10.).into()));
     }
 
     #[test]
@@ -593,12 +697,24 @@ mod tests {
             let Some(palette) = theme.palette() else {
                 continue;
             };
+            // Faint ink is fainter than soft ink, and soft ink than the ink.
+            let distance = |colour: Hsla| (colour.l - palette.background.l).abs();
+            assert!(
+                distance(palette.faint) < distance(palette.muted)
+                    && distance(palette.muted) < distance(palette.foreground),
+                "{theme:?}"
+            );
             for colour in [
                 palette.background,
                 palette.foreground,
                 palette.muted,
+                palette.faint,
                 palette.link,
+                palette.wash,
                 palette.code_background,
+                palette.code_surface,
+                palette.code_frame,
+                palette.code_rail,
                 palette.border,
             ] {
                 let text = super::hex(colour);

@@ -71,7 +71,15 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - CommonMark + GFM: tables, task lists, strikethrough, footnotes. Raw HTML
   inside Markdown renders too, and `.html` files open straight into the
   HTML preview.
-- Open, save, save as; an unsaved-changes prompt before closing.
+- Tabs: every document opens in a tab of its own (the bar shows from the
+  second one); Ctrl+T a new one, Ctrl+W closes one, Ctrl+Tab moves on. A
+  file opened from the file manager, or `smep FILE` while smep is running,
+  lands in a tab of the window that is already open.
+- The outline: the document's headings beside it (the Outline button,
+  or Ctrl+Shift+L); a click goes to that section, and the section being
+  read is marked.
+- Open, save, save as; an unsaved-changes prompt before a tab or the
+  window closes, for each document with changes.
 - Other documents become Markdown: drop a PDF, Word (.docx) or text file on
   the window, pick one under File, Import as Markdown (HTML too), or pass it
   on the command line. The result is a new, unsaved document named after
@@ -87,18 +95,25 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - Ink on paper: the application wears the Paper look of
   [dfine-blog](https://github.com/newdee/dfine-blog), light or dark with
   the system (warm white or near-black paper, grey inks, cinnabar for the
-  cursor, headings and links). The document is one design in every
-  preview theme, on screen, in HTML and in PDF: the blog's heading scale
-  with a rule under the first two levels, its paragraph gap, code a shade
-  smaller in a framed block, tables framed with a header row of ink on
-  paper (and, where the page can, quotes in the accent with a wash and
-  alternating rows).
+  cursor, headings and links). The document is set the way the blog sets
+  an article, in every preview theme, on screen, in HTML and in PDF: its
+  heading scale with a fading hairline under h2, code on a board (a
+  whiteboard in a thick aluminium frame on light paper, a thin frame with a
+  cinnabar top edge on dark) with the language in a cinnabar tab and a Copy
+  button, tables ruled across under a heavier header rule. The page and
+  the PDF add what the window cannot draw yet: cinnabar marks before h3 and
+  h4, the quote on a wash under a cinnabar 「, the faded section break,
+  framed images.
 - One static binary, no web view, no Electron.
 
 ## Keys
 
 | Action | Windows / Linux | macOS |
 |---|---|---|
+| New tab | Ctrl+T | Cmd+T |
+| Close tab | Ctrl+W | Cmd+W |
+| Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn / PgUp) | Ctrl+Tab / Ctrl+Shift+Tab (or Cmd+Shift+] / [) |
+| Outline | Ctrl+Shift+L | Cmd+Shift+L |
 | Open | Ctrl+O | Cmd+O |
 | Import as Markdown | Ctrl+Shift+O | Cmd+Shift+O |
 | Save | Ctrl+S | Cmd+S |
@@ -126,7 +141,8 @@ smep notes.md
 ```
 
 A file that does not exist yet opens as a new document and is written there
-on the first save. On a Mac, Homebrew installs the application:
+on the first save. Several files open in tabs, and while smep is running
+`smep FILE` hands FILE to that window instead of opening another. On a Mac, Homebrew installs the application:
 
 ```sh
 brew install --cask newdee/tap/smep

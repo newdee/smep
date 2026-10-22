@@ -3,12 +3,14 @@
 //! you move on (a click elsewhere, or Escape). The document itself stays in
 //! the main editor state; every keystroke in a block is written through to it.
 
+use std::hash::{Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use gpui_kit::base::text::TextView;
+use gpui_kit::base::text::{CodeBlock, TextView};
 use gpui_kit::component::input::{EditorState, Escape, InputEvent, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -26,6 +28,67 @@ pub fn image_resolver(
     move |url| match io::locate_image(base.as_deref(), url) {
         ImageLocation::File(path) => ImageSource::Resource(Resource::Path(path.into())),
         ImageLocation::Uri(uri) => ImageSource::Resource(Resource::Uri(uri.into())),
+    }
+}
+
+/// How long "Copied" stands in for "Copy" after a click.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
+
+/// The tab in a code board's top corner: the language in the accent, as
+/// the blog marks it, and a button that copies the code.
+pub fn code_block_actions(
+    palette: Palette,
+) -> impl Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync + 'static {
+    move |block, window, cx| {
+        let code = block.code();
+        let lang = block.lang().filter(|lang| !lang.trim().is_empty());
+        // The "Copied" flag lives as long as the block is drawn; blocks with
+        // the same code share it, which nobody can tell apart.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        code.hash(&mut hasher);
+        let key = SharedString::from(format!("code-copied-{:x}", hasher.finish()));
+        let copied = window.use_keyed_state(key, cx, |_, _| false);
+        let shown = *copied.read(cx);
+        h_flex()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .children(lang.map(|lang| {
+                div()
+                    .px(px(7.))
+                    .rounded(px(4.))
+                    .bg(palette.accent_soft())
+                    .text_color(palette.link)
+                    .child(SharedString::from(lang.to_uppercase()))
+            }))
+            .child(
+                div()
+                    .id("copy")
+                    .px_1()
+                    .rounded(px(4.))
+                    .text_color(palette.faint)
+                    .cursor_pointer()
+                    .hover(move |style| style.text_color(palette.link))
+                    .child(if shown { "Copied" } else { "Copy" })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+                        copied.update(cx, |copied, cx| {
+                            *copied = true;
+                            cx.notify();
+                        });
+                        let copied = copied.clone();
+                        cx.spawn(async move |cx| {
+                            cx.background_executor().timer(COPIED_FOR).await;
+                            copied.update(cx, |copied, cx| {
+                                *copied = false;
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -359,6 +422,21 @@ impl RenderedView {
         self.blocks_text = self.text(cx);
     }
 
+    /// Bring top-level block `block` to the top of the view (the outline's
+    /// jump). An edit in progress ends first, so the view's children are
+    /// the blocks, one each.
+    pub fn scroll_to_block(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.deactivate(window, cx);
+        self.scroll.scroll_to_top_of_item(block);
+        cx.notify();
+    }
+
+    /// The block at the top of the view, as far as the view knows (an
+    /// edit in progress counts as one block).
+    pub fn top_block(&self) -> usize {
+        self.scroll.top_item()
+    }
+
     /// Keyboard scrolling while no block is being typed in (reading, or the
     /// focus on the view or on a block's rendered text): arrows by a line,
     /// Page keys and Space by a page, Home and End to the ends. The key
@@ -514,7 +592,8 @@ impl RenderedView {
                     PreviewFormat::Html => TextView::html(("block-text", ix), source),
                 }
                 .style(style)
-                .image_source(image_resolver(self.base.clone())),
+                .image_source(image_resolver(self.base.clone()))
+                .code_block_actions(code_block_actions(palette)),
             )
             .into_any_element()
     }

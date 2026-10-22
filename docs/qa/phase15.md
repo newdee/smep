@@ -1,0 +1,35 @@
+# Phase 15 — the blog's look, tabs, the outline (2026-10-22)
+
+The request: "样式要和 dfine-blog 博客里的尽量一致，代码块我记得有朱砂边还是啥的"; "支持多 tab，如果已有 smep 窗口，再点本地文件，最好在新 tab 中打开"; "要有标题导航跳转，点击直接跳转到某一节".
+
+## Diagnosis
+
+- **The look, common and structural**: Phase 14's design followed the report stylesheet the user pasted then (rules under h1 and h2, an ink-filled table header, alternating rows), not the blog. The blog's article page (`dfine-blog/src/styles/components.css`, `tokens.css`) is now the one design, still written three ways from `Palette` (`theme.rs` for the window, `export::stylesheet`, `export::preamble`). The "cinnabar edge" the user remembered is the dark board's top edge: `.code { border-width: 1px; border-top: 2px solid var(--accent) }`; on light paper the board is a whiteboard in a 5 px aluminium frame. Both boards carry a band with the language in a cinnabar tab.
+- **Premise corrected**: the window's renderer cannot draw everything the blog does. gpui paints one border colour per box, so the dark top edge is an inset box shadow of the accent (gpui 0.3.9 has inset shadows); the band is the renderer's `code_block_actions` corner (the language tab and a Copy button), not a full-width band. No hook on screen for the quote's wash and 「, the faded section break, list marker colour, framed images, bold's underlay, the squares before h3 and h4; serif headings are kept off screen (no CJK serif with a bold on every machine). The page and the PDF have all of them.
+- **Tabs, structural**: the window was one document (`Smep` held the editor, preview, rendered view, path and dirty state). Now `Smep` holds `Vec<DocumentTab>`; async work names a tab by `TabId`, never by index. Invariants, each enforced at every entry point: there is always a tab; only the tab on screen, while editing, has a writable rendered view (`show_active`); every unsaved tab is asked about before the window closes or smep quits (`confirm_discard_all`); one tab per file (`load_path`, `add_documents`, Save As).
+- **"Another click opens a tab"**: on macOS Finder already sends files to the running app (`on_open_urls`); they now open in tabs. On Windows and Linux every double-click starts a process, so a running smep has to be found: `src/instance.rs` listens on a local socket per config directory (`interprocess`: a named pipe on Windows, `smep.sock` elsewhere); a later launch hands its absolute paths over and exits.
+- **Outline**: the heading list comes from the parse that already ran in the background for the preview's block table (`highlight::outline`, one parse for both). A jump scrolls the reading page's list to the heading's block, moves the editor's cursor to its line in Source and Split (the split's preview follows the editor), or scrolls the block view.
+- **Risk**: every `Smep` method that touched `self.editor` / `self.path` now goes through the active tab; Open, drop and OS opens no longer ask about unsaved changes (the edited document stays in its tab), so three tests changed meaning and were rewritten; `load_path` reads with `Document::open` (a missing file in an existing folder is a new document there, as on the command line).
+
+## Rounds
+
+Each round = review from one perspective + the full suite (Windows), and for the look the real thing: the debug window on `look.md` in Paper and Paper Dark, the exported page in headless Edge, the PDF's pages.
+
+| Round | Perspective | Result | Findings |
+|---|---|---|---|
+| A (build) | the look in the three outputs | HTML (Edge, both palettes): serif headings, h2 fading rule, h3/h4 cinnabar squares, washed quote with 「, whiteboard / cinnabar-edged board with the RUST tab, ruled table, faded break, framed image | (1) task list items kept their bullets: markdown-rs writes no `task-list-item` class (Phase 14's rule never matched) → `li:has(>input[type=checkbox]:first-child)`; (2) the PDF's code text was missing: `par(.., it)` around a raw block drops it (the read-back test caught it) → `set par` inside the board; (3) a CJK heading in the PDF set thin on Windows: SimSun / STSong have no bold → removed from the serif list (Microsoft YaHei bold takes CJK); (4) code in the PDF at 0.68 of the body: Typst scales raw by 0.8 itself → absolute 9.35 pt |
+| B (build) | the window, tabs, outline, a second launch | Paper: outline, two tabs after `smep second.md` (handed over in 59 ms, the window's title follows), boards with tab and Copy; Paper Dark: a click on an outline entry brings "第三级" to the top and marks it; cinnabar top edge on the board | the first tab's label touched the window edge → a spacer before the tabs |
+| C | concurrency in `instance.rs` | — | (1) Explorer starts one process per file when several are opened: `try_overwrite` on Unix would let a racing launch steal a live socket, and on Windows the second listener fails (`FILE_FLAG_FIRST_PIPE_INSTANCE`) with no fallback → `claim`: hand over; else listen; else retry the hand-over for 1 s; only then replace a dead socket file; a launch that reaches a smep but cannot hand over (a path with a line break) opens alone without listening; (2) the listener served callers one at a time, so a caller that connected and stayed silent (on Windows other users may connect read-only) blocked every later launch → a thread per caller; (3) a launch whose smep stopped answering would wait forever → the exchange in a thread with a 3 s timeout |
+| D | invariants, every entry point | 3 launches at once (real processes): 1 left, title `race3.md` | Save As onto a file another tab holds made two tabs of one file → refused with a report |
+| 1 (clean) | code: errors, resources, async by id (17 spots reviewed); `cargo fmt --check` 0 lines, clippy `--all-targets` 0 (default and slim) | 123 + 5, slim 114 + 5, 0 failed | none |
+| 2 (clean) | mechanism alive: 8 mutations, each must turn its test red — the left tab stays writable (M1), a blank tab is never reused (M2), the reading jump does not scroll (M3), the listener drops requests (M4), the dark board's edge in the border colour (M5), no code boards in HTML (M6), Cancel on close ignored (M7), Save As onto an open file allowed (M8); a silent caller with one listener thread (now fails in 3.02 s instead of hanging); the final binary on screen, second launch 60 ms | all 8 + 1 red, restored, green | none |
+| 3 | the other platforms: CI on ubuntu / macos / windows (the Unix socket path, the dead-socket test) | pending | |
+
+Reproducibility (round C's suite, after its fixes): the suite 3 times in a row, 123 + 5 each; `smep --css` / `--typst` for 6 themes hashed twice, identical.
+
+## Left
+
+- On screen: the quote's wash and 「, the section break, list marker colour, image frames, bold's underlay, the h3 / h4 squares, serif headings (see Diagnosis). A gpui-base PR for blockquote / rule / list-marker hooks would close most of it.
+- Two identical code blocks share their "Copied" flag (keyed by the code's hash).
+- On Linux a config directory whose socket path passes 100 bytes uses `smep-<hash>.sock` in the temporary directory, where another local user could squat the name.
+- Tabs are not restored at the next launch.

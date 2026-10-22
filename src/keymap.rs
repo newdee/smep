@@ -22,7 +22,12 @@ gpui_kit::actions!(
         ToggleEditing,
         ViewSource,
         ViewSplit,
-        ViewRendered
+        ViewRendered,
+        ToggleOutline,
+        NewTab,
+        CloseTab,
+        NextTab,
+        PreviousTab
     ]
 );
 
@@ -48,16 +53,25 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&primary("1"), ViewSource, Some(CONTEXT)),
         KeyBinding::new(&primary("2"), ViewSplit, Some(CONTEXT)),
         KeyBinding::new(&primary("3"), ViewRendered, Some(CONTEXT)),
+        KeyBinding::new(&primary("shift-l"), ToggleOutline, Some(CONTEXT)),
+        KeyBinding::new(&primary("t"), NewTab, Some(CONTEXT)),
+        KeyBinding::new(&primary("w"), CloseTab, Some(CONTEXT)),
+        KeyBinding::new("ctrl-tab", NextTab, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(CONTEXT)),
     ]);
 
     if MAC {
         cx.bind_keys([
             KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, Some(CONTEXT)),
             KeyBinding::new("cmd-q", Quit, Some(CONTEXT)),
+            KeyBinding::new("cmd-shift-]", NextTab, Some(CONTEXT)),
+            KeyBinding::new("cmd-shift-[", PreviousTab, Some(CONTEXT)),
         ]);
     } else {
         cx.bind_keys([
             KeyBinding::new("f11", ToggleFullscreen, Some(CONTEXT)),
+            KeyBinding::new("ctrl-pagedown", NextTab, Some(CONTEXT)),
+            KeyBinding::new("ctrl-pageup", PreviousTab, Some(CONTEXT)),
             // The editor binds Home/End to the line only. Document start/end
             // are Ctrl+Home/End here (macOS has Cmd+Up/Down built in).
             // These fire from the focused editor, which handles the actions.
@@ -81,6 +95,7 @@ pub fn native_menus() -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
+                MenuItem::action("New Tab", NewTab),
                 MenuItem::action("Open…", Open),
                 MenuItem::action("Import as Markdown…", Import),
                 MenuItem::action("Save", Save),
@@ -90,6 +105,8 @@ pub fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Export as HTML…", ExportHtml),
                 MenuItem::separator(),
                 MenuItem::action("Open Markdown Files with smep", MakeDefault),
+                MenuItem::separator(),
+                MenuItem::action("Close Tab", CloseTab),
             ],
             disabled: false,
         },
@@ -118,6 +135,9 @@ pub fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Split", ViewSplit),
                 MenuItem::action("Rendered", ViewRendered),
                 MenuItem::separator(),
+                MenuItem::action("Outline", ToggleOutline),
+                MenuItem::action("Next Tab", NextTab),
+                MenuItem::action("Previous Tab", PreviousTab),
                 MenuItem::action("Toggle Menu Bar", ToggleMenuBar),
                 MenuItem::action("Toggle Full Screen", ToggleFullscreen),
             ],

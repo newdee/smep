@@ -45,6 +45,8 @@ pub struct Settings {
     /// Whether the menu bar in the title bar is shown.
     #[serde(default = "default_true")]
     pub menu_bar: bool,
+    /// Whether the outline (the document's headings) is shown beside it.
+    pub outline: bool,
     /// Where these settings live; `None` means they are never written.
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -56,6 +58,7 @@ impl Default for Settings {
             preview_theme: PreviewTheme::default(),
             view_mode: ViewMode::default(),
             menu_bar: true,
+            outline: false,
             path: None,
         }
     }
@@ -146,7 +149,7 @@ mod tests {
         settings.save().unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
-            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true"
+            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true\noutline = false"
         );
         assert_eq!(Settings::load_from(path.clone()), settings);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();

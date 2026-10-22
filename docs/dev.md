@@ -118,26 +118,67 @@ cannot export.
 
 ## The look
 
-One design, three outputs. `src/theme.rs` holds it as a `Palette` (six
-colours, serif or not) plus the type every palette shares: the heading
-scale (1.62 / 1.46 / 1.2 / 1.02 / 0.92 / 0.92 of the body), bold for the
-first level and semibold below, a 2 px rule of ink under h1 and a 1 px
-rule in the border colour under h2 (`heading_rule`), a 0.95 rem paragraph
-gap, code at 0.9 of the body in a framed block with 8 px corners, a framed
-table whose header row is ink on paper. From the palette:
+One design, three outputs: dfine-blog's article page
+(`src/styles/components.css` and `tokens.css` there). `src/theme.rs`
+holds it as a `Palette` (the blog's tokens: paper, ink, soft and faint
+ink, accent, wash, the code board's surface, frame and band, hairlines;
+serif or not) plus the type every palette shares: the heading scale
+(1.62 / 1.46 / 1.2 / 1.02 / 0.92 / 0.92 of the body), bold to h3 and
+semibold below, a hairline under h2, a 0.95 rem paragraph gap, code at
+0.85 on a board (light paper: a 5 px frame, a faint shadow, a sunken
+surface; dark paper: a 1 px frame whose top edge is 2 px of the accent),
+tables ruled across with a 2 px faint-ink rule under the header and no
+frame. From the palette:
 
 - the window: `Palette::text_view_style` builds gpui-base's
-  `TextViewStyle` (`with_heading`, `with_code_block`, `with_table*`). The
-  renderer has no hook for the quote's bar, the rule's thickness, list
-  markers or images, so those keep gpui-base's defaults on screen;
-- an HTML page: `export::stylesheet` writes the same design as CSS, plus
-  what only CSS can do here (the quote in the accent with a wash,
-  alternating table rows, centred images, a print stylesheet);
+  `TextViewStyle` (`with_heading`, `with_code_block`, `with_table*`); the
+  dark board's top edge is an inset box shadow, since gpui draws one
+  border colour per box. `rendered::code_block_actions` puts the
+  language tab (the accent on its soft wash) and a Copy button in the
+  board's corner, where the blog has a band along the top. The renderer
+  has no hook for the quote's wash and mark, the section break, list
+  markers, images, bold's underlay or the marks before h3 and h4, so
+  those keep gpui-base's defaults on screen; nor for serif headings, kept
+  out on screen because a CJK serif face with a bold is not on every
+  machine;
+- an HTML page: `export::stylesheet` writes all of it as CSS, the blog's
+  rules nearly verbatim, and `export::code_boards` wraps each code block
+  the Markdown rendering wrote in the blog's `figure.code` with its band;
 - a PDF: `export::preamble` writes it as Typst `set` / `show` rules. The
   markup `to_typst` emits carries no colour, stroke or size of its own
   (a test checks), so the preamble is the whole look. A PDF takes the
   light theme of the preview's family (`PreviewTheme::light`): print is
-  ink on paper.
+  ink on paper. Typst sets raw text at 0.8 of its surroundings by itself,
+  so the preamble gives code an absolute size; and `par(..)` around a raw
+  block drops its text from the page (a block in a paragraph), so the
+  board sets `par` with a `set` rule instead (the read-back test caught
+  it).
+
+## Tabs, the outline, one smep
+
+`app::Smep` is the window; each open document is a `DocumentTab` (its
+editor, preview, rendered view, path and dirty state, its block table and
+headings). Only the tab on screen while editing has a writable rendered
+view (`show_active`), so a block edit never outlives its tab being shown.
+Async work names a tab by `TabId`, never by index: tabs close meanwhile.
+Opening a file uses up a blank tab (`is_pristine`) or adds one; a file
+already open is shown, and Save As onto a file another tab holds is
+refused (two tabs would overwrite each other). Closing the window or quitting asks about each
+unsaved tab in turn, showing it (`confirm_discard_all`).
+
+The outline comes from the same background parse as the preview's block
+table (`highlight::outline`): each heading's line and the top-level block
+holding it. A jump scrolls the reading page's list to the block, moves the
+editor's cursor to the line (the split's preview follows the editor), or
+scrolls the block view.
+
+`src/instance.rs` keeps one smep per user and config directory: the
+running one listens on a local socket (`interprocess`; a named pipe on
+Windows, `smep.sock` in the config directory elsewhere), and a later
+launch hands its absolute paths over and exits. On Windows the listener
+sends its process id first, so the caller can `AllowSetForegroundWindow`
+it. A separate `SMEP_CONFIG_DIR` is a separate smep, which is how tests
+and smoke runs keep out of the user's.
 
 `smep --css [THEME]` and `smep --typst [THEME]` print the two; saved as
 `export.css` / `export.typ` in the config directory (`Settings::dir`,

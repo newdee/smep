@@ -1,4 +1,5 @@
-//! The root view: a Markdown editor on the left, its live preview on the right.
+//! The root view: the open documents in tabs, each a Markdown editor and
+//! its live preview, with the outline of the one on screen beside it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,14 +14,15 @@ use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
-    Copy, Cut, Editor, EditorState, InputEvent, Paste, Redo, Replace, RopeExt as _, Search,
-    SelectAll, TextareaState, Undo,
+    Copy, Cut, Editor, EditorState, InputEvent, Paste, Position, Redo, Replace, RopeExt as _,
+    Search, SelectAll, TextareaState, Undo,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, Theme, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
-    window_border,
+    ActiveTheme as _, Selectable as _, Sizable as _, Theme, TitleBar, h_flex, h_resizable,
+    resizable_panel, v_flex, window_border,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -28,12 +30,13 @@ use gpui_kit::*;
 use crate::convert;
 use crate::defaults;
 use crate::export;
-use crate::highlight;
+use crate::highlight::{self, Heading};
 use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
-    self, ExportHtml, ExportPdf, Import, MakeDefault, Open, Quit, Save, SaveAs, ToggleEditing,
-    ToggleFullscreen, ToggleMenuBar, ViewRendered, ViewSource, ViewSplit,
+    self, CloseTab, ExportHtml, ExportPdf, Import, MakeDefault, NewTab, NextTab, Open, PreviousTab,
+    Quit, Save, SaveAs, ToggleEditing, ToggleFullscreen, ToggleMenuBar, ToggleOutline,
+    ViewRendered, ViewSource, ViewSplit,
 };
 use crate::rendered::{self, RenderedEvent, RenderedView};
 use crate::settings::{Settings, ViewMode};
@@ -130,14 +133,17 @@ impl<M: MultiLineMode> LineInput for InputBaseState<M> {
     }
 }
 
-/// The editor pane and the preview pane, kept in sync.
+/// One open document: its editor and preview, kept in sync, and what is
+/// known about it on disk.
 ///
 /// The editor state owns the text. Every change it emits is copied into
 /// `source` at once (that drives the dirty marker) and handed to the preview
 /// after a short pause in typing (`previewed` is what the preview has).
 /// `saved` is the text as it last was on disk; the document is dirty while
 /// `source` differs from it.
-pub struct Smep {
+struct DocumentTab {
+    /// Names the tab across awaits, where its index may have changed.
+    id: TabId,
     editor: Entity<EditorState>,
     preview: Entity<TextViewState>,
     /// The rendered view, editable block by block; shares `editor`'s text.
@@ -153,8 +159,72 @@ pub struct Smep {
     preview_refresh: Option<Task<()>>,
     /// Start line of each top-level block in `previewed`; one preview item each.
     blocks: Vec<usize>,
+    /// The headings of `previewed`, for the outline.
+    headings: Vec<Heading>,
     /// The editor's top line last pushed to the preview.
     scroll_sync: Option<usize>,
+    _subscriptions: Vec<Subscription>,
+}
+
+type TabId = u64;
+
+impl DocumentTab {
+    fn is_dirty(&self) -> bool {
+        self.source != self.saved
+    }
+
+    /// The document's path, or the one it would suggest: the original's
+    /// with `.md` for a converted document. `None` for a blank one.
+    fn named_path(&self) -> Option<PathBuf> {
+        self.path
+            .clone()
+            .or_else(|| self.origin.as_deref().map(convert::markdown_path_for))
+    }
+
+    /// The document's directory, where its relative images are looked up;
+    /// `None` for a document that has no place yet.
+    fn document_dir(&self) -> Option<PathBuf> {
+        self.named_path()
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
+    /// A blank document nobody has typed in: opening a file replaces it
+    /// rather than opening a tab beside it.
+    fn is_pristine(&self) -> bool {
+        self.path.is_none()
+            && self.origin.is_none()
+            && self.source.is_empty()
+            && self.saved.is_empty()
+    }
+
+    /// The tab's label: the name, after a dot while unsaved.
+    fn label(&self) -> String {
+        format!(
+            "{}{}",
+            if self.is_dirty() { "● " } else { "" },
+            Document::display_name(self.named_path().as_deref())
+        )
+    }
+
+    /// Whether this tab holds the file at `path`.
+    fn holds(&self, path: &Path) -> bool {
+        self.path
+            .as_deref()
+            .is_some_and(|own| io::same_file(own, path))
+    }
+}
+
+/// The window: a tab per open document (the bar shows once there are two),
+/// the outline of the one on screen beside it when asked for, and the
+/// title bar with the menus.
+pub struct Smep {
+    tabs: Vec<DocumentTab>,
+    /// Index of the tab on screen.
+    active: usize,
+    next_tab: TabId,
     insert_menu: Option<InsertMenu>,
     settings: Settings,
     /// Editing, or reading: the document rendered and untouchable. Every
@@ -171,6 +241,9 @@ pub struct Smep {
 /// How far an arrow key scrolls the document being read; a page is the
 /// viewport less this.
 const LINE_STEP: Pixels = px(40.);
+
+/// The outline's width.
+const OUTLINE_WIDTH: Pixels = px(240.);
 
 fn preview_state(
     format: PreviewFormat,
@@ -224,60 +297,12 @@ impl Smep {
     ) -> Self {
         Theme::sync_system_appearance(Some(window), cx);
 
-        let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .default_value(document.text.clone())
-                .language(highlight::LANGUAGE)
-                .soft_wrap(true)
-                .line_number(false)
-                .searchable(true)
-                .placeholder("Write here. Type / on an empty line to insert a block.")
-        });
-        editor.update(cx, |state, cx| {
-            state.set_highlighter_factory(highlight::factory(), cx);
-            state.focus(window, cx);
-        });
-        let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
-        let rendered = cx.new(|cx| RenderedView::new(editor.clone(), document.format, window, cx));
+        let subscriptions = vec![window.observe_window_appearance(|window, cx| {
+            Theme::sync_system_appearance(Some(window), cx);
+        })];
 
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &rendered,
-                window,
-                |this, _, event: &RenderedEvent, window, cx| match event {
-                    RenderedEvent::SlashTyped => this.open_insert_menu(window, cx),
-                },
-            ),
-            cx.subscribe_in(
-                &editor,
-                window,
-                |this, editor, event: &InputEvent, window, cx| {
-                    if let InputEvent::Change = event {
-                        let was_dirty = this.is_dirty();
-                        this.source = editor.read(cx).value();
-                        if this.is_dirty() != was_dirty {
-                            this.refresh_title(window);
-                        }
-                        this.schedule_preview_refresh(window, cx);
-                        if Self::slash_typed(editor.read(cx)) {
-                            this.open_insert_menu(window, cx);
-                        }
-                        cx.notify();
-                    }
-                },
-            ),
-            // Cursor moves do not emit events; observe so the "+" follows the cursor.
-            cx.observe(&editor, |_, _, cx| cx.notify()),
-            // A block starting or ending its edit changes where menus send
-            // their actions; the menus are rebuilt on render.
-            cx.observe(&rendered, |_, _, cx| cx.notify()),
-            window.observe_window_appearance(|window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
-            }),
-        ];
-
-        // Closing with unsaved changes asks first. The platform close is
-        // vetoed here and redone once the prompt resolves.
+        // Closing with unsaved changes asks first, tab by tab. The platform
+        // close is vetoed here and redone once the prompts resolve.
         window.on_window_should_close(cx, {
             let this = cx.weak_entity();
             move |window, cx| {
@@ -287,7 +312,7 @@ impl Smep {
                 if !smep.read(cx).is_dirty() {
                     return true;
                 }
-                let proceed = smep.update(cx, |this, cx| this.confirm_discard(window, cx));
+                let proceed = smep.update(cx, |this, cx| this.confirm_discard_all(window, cx));
                 let handle = window.window_handle();
                 cx.spawn(async move |cx| {
                     if proceed.await {
@@ -299,6 +324,81 @@ impl Smep {
             }
         });
 
+        let mut this = Self {
+            tabs: Vec::new(),
+            active: 0,
+            next_tab: 0,
+            insert_menu: None,
+            focus_handle: cx.focus_handle(),
+            reading_focus: cx.focus_handle(),
+            settings,
+            editing: false,
+            _subscriptions: subscriptions,
+        };
+        this.push_tab(document, window, cx);
+        this.refresh_title(window);
+        // Reading mode: the reading pane holds the focus so the root's
+        // shortcuts and the scrolling keys work.
+        this.reading_focus.focus(window, cx);
+        this
+    }
+
+    /// Add a tab for `document` after the others, without showing it.
+    /// Returns its index.
+    fn push_tab(
+        &mut self,
+        document: Document,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let id = self.next_tab;
+        self.next_tab += 1;
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .default_value(document.text.clone())
+                .language(highlight::LANGUAGE)
+                .soft_wrap(true)
+                .line_number(false)
+                .searchable(true)
+                .placeholder("Write here. Type / on an empty line to insert a block.")
+        });
+        editor.update(cx, |state, cx| {
+            state.set_highlighter_factory(highlight::factory(), cx);
+        });
+        let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
+        let rendered = cx.new(|cx| RenderedView::new(editor.clone(), document.format, window, cx));
+        // Only the tab on screen while editing has a writable rendered view
+        // (see `show_active`).
+        rendered.update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
+
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &rendered,
+                window,
+                move |this, _, event: &RenderedEvent, window, cx| match event {
+                    RenderedEvent::SlashTyped => {
+                        if this.tab().id == id {
+                            this.open_insert_menu(window, cx);
+                        }
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &editor,
+                window,
+                move |this, editor, event: &InputEvent, window, cx| {
+                    if let InputEvent::Change = event {
+                        this.on_change(id, editor, window, cx);
+                    }
+                },
+            ),
+            // Cursor moves do not emit events; observe so the "+" follows the cursor.
+            cx.observe(&editor, |_, _, cx| cx.notify()),
+            // A block starting or ending its edit changes where menus send
+            // their actions; the menus are rebuilt on render.
+            cx.observe(&rendered, |_, _, cx| cx.notify()),
+        ];
+
         let source: SharedString = document.text.into();
         // A converted document is new and unsaved; a read one is as on disk.
         let saved = if document.origin.is_some() {
@@ -306,7 +406,8 @@ impl Smep {
         } else {
             source.clone()
         };
-        let mut this = Self {
+        self.tabs.push(DocumentTab {
+            id,
             editor,
             preview,
             rendered,
@@ -318,22 +419,85 @@ impl Smep {
             saved,
             preview_refresh: None,
             blocks: Vec::new(),
+            headings: Vec::new(),
             scroll_sync: None,
-            insert_menu: None,
-            focus_handle: cx.focus_handle(),
-            reading_focus: cx.focus_handle(),
-            settings,
-            editing: false,
             _subscriptions: subscriptions,
+        });
+        self.schedule_outline(id, window, cx);
+        self.tabs.len() - 1
+    }
+
+    /// Open `documents` in tabs after the others, leaving the one on screen
+    /// there (the rest of `smep a.md b.md`). A file already open is not
+    /// opened twice.
+    pub fn add_documents(
+        &mut self,
+        documents: Vec<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for document in documents {
+            let open = document
+                .path
+                .as_deref()
+                .is_some_and(|path| self.tabs.iter().any(|tab| tab.holds(path)));
+            if !open {
+                self.push_tab(document, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The tab on screen.
+    fn tab(&self) -> &DocumentTab {
+        &self.tabs[self.active]
+    }
+
+    fn tab_index(&self, id: TabId) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == id)
+    }
+
+    fn tab_by_id(&self, id: TabId) -> Option<&DocumentTab> {
+        self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    fn tab_by_id_mut(&mut self, id: TabId) -> Option<&mut DocumentTab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+
+    #[cfg(test)]
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    #[cfg(test)]
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
+    /// A change in the editor of tab `id`.
+    fn on_change(
+        &mut self,
+        id: TabId,
+        editor: &Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.tab_index(id) else {
+            return;
         };
-        this.schedule_block_table(window, cx);
-        this.refresh_title(window);
-        // Reading mode: the reading pane holds the focus so the root's
-        // shortcuts and the scrolling keys work.
-        this.rendered
-            .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
-        this.reading_focus.focus(window, cx);
-        this
+        let tab = &mut self.tabs[ix];
+        let was_dirty = tab.is_dirty();
+        tab.source = editor.read(cx).value();
+        let shown = ix == self.active;
+        if shown && tab.is_dirty() != was_dirty {
+            self.refresh_title(window);
+        }
+        self.schedule_preview_refresh(id, window, cx);
+        if shown && Self::slash_typed(editor.read(cx)) {
+            self.open_insert_menu(window, cx);
+        }
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -344,7 +508,7 @@ impl Smep {
     /// The preview's list, which the keys scroll while reading.
     #[cfg(test)]
     pub fn reading_list(&self, cx: &App) -> ListState {
-        self.preview.read(cx).list_state().clone()
+        self.tab().preview.read(cx).list_state().clone()
     }
 
     #[cfg(test)]
@@ -373,13 +537,95 @@ impl Smep {
             return;
         }
         self.editing = false;
+        self.show_active(window, cx);
+    }
+
+    /// Put the active tab on screen as the mode wants it: while reading its
+    /// rendered view is read-only (an edit in progress in a block ends) and
+    /// the reading pane has the focus; while editing the view mode takes
+    /// over (`set_view_mode`).
+    fn show_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.insert_menu = None;
-        // An edit in progress in a block ends; the view is not shown again
-        // until editing resumes.
-        self.rendered
-            .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
-        self.reading_focus.focus(window, cx);
+        if self.editing {
+            self.set_view_mode(self.settings.view_mode, window, cx);
+        } else {
+            self.tab()
+                .rendered
+                .clone()
+                .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
+            self.reading_focus.focus(window, cx);
+        }
+        self.refresh_title(window);
         cx.notify();
+    }
+
+    /// Show tab `ix`. The tab left keeps its text, scroll and undo; its
+    /// block edit, if any, ends.
+    pub fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        if ix != self.active {
+            let left = self.tab().rendered.clone();
+            left.update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
+            self.active = ix;
+        }
+        self.show_active(window, cx);
+    }
+
+    /// A new, empty document in a tab of its own.
+    pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = self.push_tab(Document::empty(), window, cx);
+        self.activate(ix, window, cx);
+    }
+
+    /// Close tab `ix`, after the unsaved-changes prompt. The last tab
+    /// closed leaves an empty one: the window stays until it is closed.
+    pub fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        self.activate(ix, window, cx);
+        let id = self.tab().id;
+        let proceed = self.confirm_discard(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if proceed.await {
+                let _ = this.update_in(cx, |this, window, cx| this.remove_tab(id, window, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn remove_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.tab_index(id) else {
+            return;
+        };
+        self.tabs.remove(ix);
+        if self.tabs.is_empty() {
+            self.push_tab(Document::empty(), window, cx);
+        }
+        if ix < self.active {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tabs.len() - 1);
+        self.show_active(window, cx);
+    }
+
+    fn new_tab_action(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_tab(window, cx);
+    }
+
+    fn close_tab_action(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab(self.active, window, cx);
+    }
+
+    fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate((self.active + 1) % self.tabs.len(), window, cx);
+    }
+
+    fn previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.tabs.len();
+        self.activate((self.active + count - 1) % count, window, cx);
     }
 
     /// Keys scroll the document being read: a line, a page, the ends.
@@ -390,7 +636,7 @@ impl Smep {
         if modifiers.control || modifiers.alt || modifiers.platform {
             return;
         }
-        let list = self.preview.read(cx).list_state().clone();
+        let list = self.tab().preview.read(cx).list_state().clone();
         let page = (list.viewport_bounds().size.height - LINE_STEP).max(LINE_STEP);
         match (keystroke.key.as_str(), modifiers.shift) {
             ("down", false) => list.scroll_by(LINE_STEP),
@@ -435,28 +681,30 @@ impl Smep {
             self.save_settings();
         }
         self.editing = true;
-        self.rendered
-            .update(cx, |rendered, cx| rendered.set_read_only(false, window, cx));
+        let rendered = self.tab().rendered.clone();
+        rendered.update(cx, |rendered, cx| rendered.set_read_only(false, window, cx));
         if mode == ViewMode::Rendered {
             // The rendered view takes focus (its active block, if any, takes
             // it from there), so the root's shortcuts keep working.
-            match self.rendered.read(cx).active_editor() {
+            match rendered.read(cx).active_editor() {
                 Some(block) => block.update(cx, |state, cx| state.focus(window, cx)),
-                None => self
-                    .rendered
-                    .read(cx)
-                    .focus_handle()
-                    .clone()
-                    .focus(window, cx),
+                None => rendered.read(cx).focus_handle().clone().focus(window, cx),
             }
         } else {
-            self.editor.update(cx, |state, cx| state.focus(window, cx));
+            self.tab()
+                .editor
+                .clone()
+                .update(cx, |state, cx| state.focus(window, cx));
         }
         cx.notify();
     }
 
     pub fn menu_bar_shown(&self) -> bool {
         self.settings.menu_bar
+    }
+
+    pub fn outline_shown(&self) -> bool {
+        self.settings.outline
     }
 
     fn save_settings(&self) {
@@ -487,6 +735,12 @@ impl Smep {
         cx.notify();
     }
 
+    fn toggle_outline(&mut self, _: &ToggleOutline, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings.outline = !self.settings.outline;
+        self.save_settings();
+        cx.notify();
+    }
+
     fn toggle_fullscreen(
         &mut self,
         _: &ToggleFullscreen,
@@ -497,9 +751,9 @@ impl Smep {
         cx.notify();
     }
 
-    /// Quit after the unsaved-changes prompt, if any.
+    /// Quit after the unsaved-changes prompts, if any.
     fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
-        let proceed = self.confirm_discard(window, cx);
+        let proceed = self.confirm_discard_all(window, cx);
         cx.spawn(async move |_, cx| {
             if proceed.await {
                 cx.update(|cx| cx.quit());
@@ -515,6 +769,7 @@ impl Smep {
         let mode = self.view_mode();
         let editing = self.editing;
         let menu_bar = self.menu_bar_shown();
+        let outline = self.outline_shown();
         let current_theme = self.preview_theme();
         let this = cx.weak_entity();
 
@@ -534,7 +789,8 @@ impl Smep {
             .child(button("menu-file", "File").dropdown_menu({
                 let focus = editor_focus.clone();
                 move |menu, _, _| {
-                    menu.menu("Open…", Box::new(Open))
+                    menu.menu("New Tab", Box::new(NewTab))
+                        .menu("Open…", Box::new(Open))
                         .menu("Import as Markdown…", Box::new(Import))
                         .menu("Save", Box::new(Save))
                         .menu("Save As…", Box::new(SaveAs))
@@ -544,6 +800,7 @@ impl Smep {
                         .separator()
                         .menu("Open Markdown Files with smep", Box::new(MakeDefault))
                         .separator()
+                        .menu("Close Tab", Box::new(CloseTab))
                         .menu("Quit", Box::new(Quit))
                         .action_context(focus.clone())
                 }
@@ -602,7 +859,15 @@ impl Smep {
                         submenu
                     });
                     menu.separator()
+                        .item(
+                            PopupMenuItem::new("Outline")
+                                .checked(outline)
+                                .action(Box::new(ToggleOutline)),
+                        )
                         .item(PopupMenuItem::submenu("Preview Theme", themes))
+                        .separator()
+                        .menu("Next Tab", Box::new(NextTab))
+                        .menu("Previous Tab", Box::new(PreviousTab))
                         .separator()
                         .item(
                             PopupMenuItem::new("Menu Bar")
@@ -617,15 +882,21 @@ impl Smep {
     }
 
     /// The title bar: menus on the left (when shown), the document in the
-    /// middle, the window controls on the right (added by `TitleBar`).
+    /// middle, the outline and Write / Read switches and the window
+    /// controls on the right (the last added by `TitleBar`).
     fn render_title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let title = format!(
-            "{}{}",
-            if self.is_dirty() { "● " } else { "" },
-            Document::display_name(self.named_path().as_deref())
-        );
+        let title = self.tab().label();
         let muted = cx.theme().muted_foreground;
         let menu_bar = self.menu_bar_shown().then(|| self.render_menu_bar(cx));
+        let outline_button = Button::new("outline-toggle")
+            .label("Outline")
+            .ghost()
+            .xsmall()
+            .tab_stop(false)
+            .selected(self.outline_shown())
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_outline(&ToggleOutline, window, cx);
+            }));
         // The one switch between reading and editing that needs no key.
         let mode_button = Button::new("edit-toggle")
             .label(if self.editing { "Read" } else { "Write" })
@@ -647,116 +918,363 @@ impl Smep {
                     .child(div().text_sm().text_color(muted).child(title))
                     .child(div().flex_1())
                     .child(
-                        div()
+                        h_flex()
                             .pr_2()
+                            .gap_1()
                             // The title bar starts a window move on mouse
                             // down plus any movement, and the move swallows
                             // the mouse up a click needs; the press stays here.
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(outline_button)
                             .child(mode_button),
                     ),
             )
             .into_any_element()
     }
 
-    /// Re-parse the preview once typing pauses. Each call restarts the wait.
-    fn schedule_preview_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.preview_refresh = Some(cx.spawn_in(window, async move |this, cx| {
+    /// The tabs, once there is more than one: a click shows one, its ×
+    /// closes it.
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.tabs.len() < 2 {
+            return None;
+        }
+        let this = cx.weak_entity();
+        let muted = cx.theme().muted_foreground;
+        let tabs = self.tabs.iter().enumerate().map(|(ix, tab)| {
+            let this = this.clone();
+            let close = div()
+                .id(("close-tab", tab.id as usize))
+                .ml_1()
+                .px_1()
+                .rounded_sm()
+                .text_color(muted)
+                .hover(|style| style.bg(gpui_kit::black().opacity(0.08)))
+                .child("×")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.close_tab(ix, window, cx));
+                });
+            Tab::new().label(tab.label()).suffix(close)
+        });
+        Some(
+            TabBar::new("tabs")
+                .underline()
+                // The first tab clear of the window's edge.
+                .prefix(div().w_2())
+                .small()
+                .menu(true)
+                .max_width(px(220.))
+                .selected_index(self.active)
+                .on_click({
+                    let this = this.clone();
+                    move |ix: &usize, window, cx| {
+                        let _ = this.update(cx, |this, cx| this.activate(*ix, window, cx));
+                    }
+                })
+                .children(tabs)
+                .into_any_element(),
+        )
+    }
+
+    /// Re-parse tab `id`'s preview once typing pauses. Each call restarts
+    /// the wait.
+    fn schedule_preview_refresh(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
             let Ok(Some(text)) = this.update(cx, |this, _| {
-                (this.previewed != this.source).then(|| this.source.clone())
+                let tab = this.tab_by_id(id)?;
+                (tab.previewed != tab.source).then(|| tab.source.clone())
             }) else {
                 return;
             };
             // The block table is a whole-document parse, as costly as the
             // preview's own (which the preview runs off the UI thread too).
-            let blocks = cx
+            let (blocks, headings) = cx
                 .background_spawn({
                     let text = text.clone();
-                    async move { highlight::block_start_lines(&text) }
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| this.show_preview(text, blocks, cx));
-        }));
-    }
-
-    /// Hand `text` to the preview, with `blocks` its block table.
-    fn show_preview(&mut self, text: SharedString, blocks: Vec<usize>, cx: &mut Context<Self>) {
-        self.previewed = text.clone();
-        self.blocks = blocks;
-        self.preview
-            .update(cx, |state, cx| state.set_text(&text, cx));
-        self.scroll_sync = None;
-        cx.notify();
-    }
-
-    /// Point the preview and the rendered view at the current source in
-    /// `format`, right away. The block table follows a moment later; until
-    /// then the scroll sync goes by proportion.
-    fn set_preview(&mut self, format: PreviewFormat, window: &mut Window, cx: &mut Context<Self>) {
-        self.preview_refresh = None;
-        let text = self.source.clone();
-        if format != self.format {
-            self.format = format;
-            self.preview = cx.new(|cx| preview_state(format, &text, cx));
-            self.rendered
-                .update(cx, |rendered, cx| rendered.set_format(format, window, cx));
-        }
-        self.show_preview(text, Vec::new(), cx);
-        self.schedule_block_table(window, cx);
-    }
-
-    /// Compute the block table for what the preview shows, off the UI
-    /// thread, and adopt it if the preview still shows that text.
-    fn schedule_block_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.previewed.clone();
-        self.preview_refresh = Some(cx.spawn_in(window, async move |this, cx| {
-            let blocks = cx
-                .background_spawn({
-                    let text = text.clone();
-                    async move { highlight::block_start_lines(&text) }
+                    async move { highlight::outline(&text) }
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.previewed == text {
-                    this.blocks = blocks;
-                    this.scroll_sync = None;
+                this.show_preview(id, text, blocks, headings, cx)
+            });
+        });
+        if let Some(tab) = self.tab_by_id_mut(id) {
+            tab.preview_refresh = Some(task);
+        }
+    }
+
+    /// Hand `text` to tab `id`'s preview, with `blocks` its block table and
+    /// `headings` its outline.
+    fn show_preview(
+        &mut self,
+        id: TabId,
+        text: SharedString,
+        blocks: Vec<usize>,
+        headings: Vec<Heading>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tab_by_id_mut(id) else {
+            return;
+        };
+        tab.previewed = text.clone();
+        tab.blocks = blocks;
+        tab.headings = headings;
+        tab.preview
+            .update(cx, |state, cx| state.set_text(&text, cx));
+        tab.scroll_sync = None;
+        cx.notify();
+    }
+
+    /// Point tab `id`'s preview and rendered view at its current source in
+    /// `format`, right away. The block table follows a moment later; until
+    /// then the scroll sync goes by proportion.
+    fn set_preview(
+        &mut self,
+        id: TabId,
+        format: PreviewFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tab_by_id_mut(id) else {
+            return;
+        };
+        tab.preview_refresh = None;
+        let text = tab.source.clone();
+        if format != tab.format {
+            tab.format = format;
+            tab.preview = cx.new(|cx| preview_state(format, &text, cx));
+            tab.rendered
+                .clone()
+                .update(cx, |rendered, cx| rendered.set_format(format, window, cx));
+        }
+        let headings = Vec::new();
+        self.show_preview(id, text, Vec::new(), headings, cx);
+        self.schedule_outline(id, window, cx);
+    }
+
+    /// Compute the block table and the outline for what tab `id`'s preview
+    /// shows, off the UI thread, and adopt them if the preview still shows
+    /// that text.
+    fn schedule_outline(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.tab_by_id(id).map(|tab| tab.previewed.clone()) else {
+            return;
+        };
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let (blocks, headings) = cx
+                .background_spawn({
+                    let text = text.clone();
+                    async move { highlight::outline(&text) }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(tab) = this.tab_by_id_mut(id)
+                    && tab.previewed == text
+                {
+                    tab.blocks = blocks;
+                    tab.headings = headings;
+                    tab.scroll_sync = None;
                     cx.notify();
                 }
             });
-        }));
+        });
+        if let Some(tab) = self.tab_by_id_mut(id) {
+            tab.preview_refresh = Some(task);
+        }
+    }
+
+    /// The preview item holding top-level block `block`: the block itself
+    /// while the preview has one item per block, else by proportion of
+    /// `line` in `lines` (mid-parse, or split differently).
+    fn preview_item(
+        tab: &DocumentTab,
+        list: &ListState,
+        block: usize,
+        line: usize,
+        lines: usize,
+    ) -> Option<usize> {
+        let count = list.item_count();
+        if count == 0 {
+            return None;
+        }
+        Some(if count == tab.blocks.len() {
+            block.min(count - 1)
+        } else {
+            (count * line / lines.max(1)).min(count - 1)
+        })
     }
 
     /// Scroll the preview to the block that holds the editor's top line.
     /// Editor scrolling drives the preview; the preview never drives the editor.
     fn sync_preview_scroll(&mut self, cx: &mut Context<Self>) {
-        let Some(top) = top_visible_line(self.editor.read(cx)) else {
+        let ix = self.active;
+        let Some(top) = top_visible_line(self.tabs[ix].editor.read(cx)) else {
             return;
         };
-        if self.scroll_sync == Some(top) {
+        let tab = &mut self.tabs[ix];
+        if tab.scroll_sync == Some(top) {
             return;
         }
-        self.scroll_sync = Some(top);
+        tab.scroll_sync = Some(top);
+        let tab = &self.tabs[ix];
+        let list = tab.preview.read(cx).list_state().clone();
+        // The last block starting at or above `top`.
+        let block = tab
+            .blocks
+            .partition_point(|&start| start <= top)
+            .saturating_sub(1);
+        let lines = tab.editor.read(cx).text().lines_len();
+        if let Some(item_ix) = Self::preview_item(tab, &list, block, top, lines) {
+            list.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: px(0.),
+            });
+        }
+    }
 
-        let list = self.preview.read(cx).list_state().clone();
-        let count = list.item_count();
-        if count == 0 {
+    /// Bring heading `ix` of the outline to the top of whatever shows the
+    /// document: the page being read, the editor (the split's preview
+    /// follows it), or the rendered blocks.
+    pub fn jump_to_heading(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = self.tab();
+        let Some(heading) = tab.headings.get(ix).cloned() else {
             return;
-        }
-        let item_ix = if count == self.blocks.len() {
-            // One preview item per block: the last block starting at or above `top`.
-            self.blocks
-                .partition_point(|&start| start <= top)
-                .saturating_sub(1)
-        } else {
-            // The preview is mid-parse or split blocks differently; go proportional.
-            let lines = self.editor.read(cx).text().lines_len().max(1);
-            (count * top / lines).min(count - 1)
         };
-        list.scroll_to(ListOffset {
-            item_ix,
-            offset_in_item: px(0.),
+        match (self.editing, self.layout()) {
+            (false, _) => {
+                let list = tab.preview.read(cx).list_state().clone();
+                let lines = tab.previewed.lines().count();
+                if let Some(item_ix) =
+                    Self::preview_item(tab, &list, heading.block, heading.line, lines)
+                {
+                    list.scroll_to(ListOffset {
+                        item_ix,
+                        offset_in_item: px(0.),
+                    });
+                }
+                self.reading_focus.focus(window, cx);
+            }
+            (true, ViewMode::Rendered) => {
+                tab.rendered.clone().update(cx, |rendered, cx| {
+                    rendered.scroll_to_block(heading.block, window, cx)
+                });
+            }
+            (true, _) => {
+                let editor = tab.editor.clone();
+                let line = heading
+                    .line
+                    .min(editor.read(cx).text().lines_len().saturating_sub(1));
+                editor.update(cx, |state, cx| {
+                    state.set_cursor_position(Position::new(line as u32, 0), window, cx);
+                });
+                // The cursor move scrolls the line into view, at whatever
+                // edge it came from. Two frames on, the line is laid out
+                // and the editor scrolls it up to the top.
+                window.on_next_frame(move |window, _| {
+                    window.on_next_frame(move |_, cx| {
+                        editor.update(cx, |state, cx| {
+                            let offset = state.text().line_start_offset(line);
+                            let Some(bounds) = state.range_to_bounds(&(offset..offset)) else {
+                                return;
+                            };
+                            let below = bounds.top() - state.input_bounds().top();
+                            let scroll = state.scroll_offset();
+                            state.set_scroll_offset(point(scroll.x, scroll.y - below), cx);
+                        });
+                    });
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    /// The heading the document is at: the last one at or above the top of
+    /// what shows it.
+    fn current_heading(&self, cx: &App) -> Option<usize> {
+        let tab = self.tab();
+        if tab.headings.is_empty() {
+            return None;
+        }
+        let at_or_above = |above: &dyn Fn(&Heading) -> bool| tab.headings.iter().rposition(above);
+        match self.layout() {
+            ViewMode::Source => {
+                let top = top_visible_line(tab.editor.read(cx))?;
+                at_or_above(&|heading| heading.line <= top)
+            }
+            ViewMode::Rendered if self.editing => {
+                let top = tab.rendered.read(cx).top_block();
+                at_or_above(&|heading| heading.block <= top)
+            }
+            _ => {
+                let list = tab.preview.read(cx).list_state();
+                if list.item_count() != tab.blocks.len() {
+                    return None;
+                }
+                let top = list.logical_scroll_top().item_ix;
+                at_or_above(&|heading| heading.block <= top)
+            }
+        }
+    }
+
+    /// The outline: the document's headings, indented by level, the one the
+    /// document is at marked. A click goes there.
+    fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.current_heading(cx);
+        let theme = cx.theme();
+        let (foreground, muted, accent, hover, border, background) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.link,
+            theme.muted,
+            theme.border,
+            theme.title_bar,
+        );
+        let headings = &self.tab().headings;
+        let entries = headings.iter().enumerate().map(|(ix, heading)| {
+            let marked = current == Some(ix);
+            div()
+                .id(("heading", ix))
+                .w_full()
+                .pl(px(16. + 12. * f32::from(heading.level.saturating_sub(1))))
+                .pr_3()
+                .py(px(3.))
+                .text_sm()
+                .truncate()
+                .cursor_pointer()
+                .text_color(if marked {
+                    accent
+                } else if heading.level <= 2 {
+                    foreground
+                } else {
+                    muted
+                })
+                .hover(move |style| style.bg(hover))
+                .child(SharedString::from(heading.title.clone()))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.jump_to_heading(ix, window, cx);
+                }))
         });
+        v_flex()
+            .id("outline")
+            .w(OUTLINE_WIDTH)
+            .flex_shrink_0()
+            .h_full()
+            .overflow_y_scroll()
+            .py_3()
+            .bg(background)
+            .border_r_1()
+            .border_color(border)
+            .when(headings.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_4()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("No headings yet."),
+                )
+            })
+            .children(entries)
+            .into_any_element()
     }
 
     /// The window title for a document: `● name — smep` while dirty.
@@ -765,66 +1283,76 @@ impl Smep {
         format!("{marker}{} — smep", Document::display_name(path))
     }
 
+    /// Whether any open document has unsaved changes.
     pub fn is_dirty(&self) -> bool {
-        self.source != self.saved
-    }
-
-    /// The document's path, or the one it would suggest: the original's
-    /// with `.md` for a converted document. `None` for a blank one.
-    fn named_path(&self) -> Option<PathBuf> {
-        self.path
-            .clone()
-            .or_else(|| self.origin.as_deref().map(convert::markdown_path_for))
-    }
-
-    /// The document's directory, where its relative images are looked up;
-    /// `None` for a document that has no place yet.
-    fn document_dir(&self) -> Option<PathBuf> {
-        self.named_path()
-            .as_deref()
-            .and_then(Path::parent)
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .map(Path::to_path_buf)
+        self.tabs.iter().any(DocumentTab::is_dirty)
     }
 
     fn refresh_title(&self, window: &mut Window) {
+        let tab = self.tab();
         window.set_window_title(&Self::title_for(
-            self.named_path().as_deref(),
-            self.is_dirty(),
+            tab.named_path().as_deref(),
+            tab.is_dirty(),
         ));
     }
 
-    /// Replace the buffer with `document`, as after Open or Import.
+    /// Replace the active tab's buffer with `document`, as after Open or
+    /// Import into a blank tab.
     fn load(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
-        self.path = document.path;
-        self.origin = document.origin;
-        self.source = document.text.clone().into();
-        self.saved = if self.origin.is_some() {
+        let ix = self.active;
+        let tab = &mut self.tabs[ix];
+        let id = tab.id;
+        tab.path = document.path;
+        tab.origin = document.origin;
+        tab.source = document.text.clone().into();
+        tab.saved = if tab.origin.is_some() {
             SharedString::default()
         } else {
-            self.source.clone()
+            tab.source.clone()
         };
         // `set_value` emits no change event, so `source` is set by hand above
         // and the rendered view is told that its block is gone.
-        self.rendered
-            .update(cx, |rendered, cx| rendered.deactivate(window, cx));
-        self.editor
-            .update(cx, |state, cx| state.set_value(document.text, window, cx));
-        self.set_preview(document.format, window, cx);
+        let (rendered, editor) = (tab.rendered.clone(), tab.editor.clone());
+        rendered.update(cx, |rendered, cx| rendered.deactivate(window, cx));
+        editor.update(cx, |state, cx| state.set_value(document.text, window, cx));
+        self.set_preview(id, document.format, window, cx);
         self.refresh_title(window);
     }
 
-    /// Write the buffer to `path` and adopt it as the document's path.
-    fn write_to(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let text = self.editor.read(cx).value();
+    /// Show `document`: in the active tab when that is blank, else in a new
+    /// tab.
+    fn place(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab().is_pristine() {
+            self.load(document, window, cx);
+            self.show_active(window, cx);
+        } else {
+            let ix = self.push_tab(document, window, cx);
+            self.activate(ix, window, cx);
+        }
+    }
+
+    /// Write tab `id`'s buffer to `path` and adopt it as the document's path.
+    fn write_to(
+        &mut self,
+        id: TabId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.tab_by_id(id) else {
+            return false;
+        };
+        let text = tab.editor.read(cx).value();
         match io::write(&path, &text) {
             Ok(()) => {
-                self.saved = text.clone();
-                self.source = text;
+                let tab = self.tab_by_id_mut(id).expect("looked up above");
+                tab.saved = text.clone();
+                tab.source = text;
                 let format = PreviewFormat::for_path(&path);
-                self.path = Some(path);
-                if format != self.format {
-                    self.set_preview(format, window, cx);
+                let changed = format != tab.format;
+                tab.path = Some(path);
+                if changed {
+                    self.set_preview(id, format, window, cx);
                 }
                 self.refresh_title(window);
                 cx.notify();
@@ -850,17 +1378,28 @@ impl Smep {
         .detach();
     }
 
-    /// Save to the current path, or ask for one. Resolves to whether it saved.
-    fn save_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
-        match self.path.clone() {
-            Some(path) => Task::ready(self.write_to(path, window, cx)),
-            None => self.save_as_task(window, cx),
+    /// Save tab `id` to its path, or ask for one. Resolves to whether it
+    /// saved.
+    fn save_task(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        match self.tab_by_id(id).map(|tab| tab.path.clone()) {
+            Some(Some(path)) => Task::ready(self.write_to(id, path, window, cx)),
+            Some(None) => self.save_as_task(id, window, cx),
+            None => Task::ready(false),
         }
     }
 
-    /// Ask for a path, then save there. Resolves to whether it saved.
-    fn save_as_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
-        let named = self.named_path();
+    /// Ask for a path, then save tab `id` there. Resolves to whether it
+    /// saved.
+    fn save_as_task(
+        &mut self,
+        id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let Some(tab) = self.tab_by_id(id) else {
+            return Task::ready(false);
+        };
+        let named = tab.named_path();
         let directory = named
             .as_deref()
             .and_then(Path::parent)
@@ -878,19 +1417,34 @@ impl Smep {
             let Ok(Ok(Some(path))) = chosen.await else {
                 return false;
             };
-            this.update_in(cx, |this, window, cx| this.write_to(path, window, cx))
-                .unwrap_or(false)
+            this.update_in(cx, |this, window, cx| {
+                // One tab per file: two would overwrite each other.
+                if this.tabs.iter().any(|tab| tab.id != id && tab.holds(&path)) {
+                    this.report(
+                        &format!("{} is open in another tab", path.display()),
+                        "Close that tab first, or save under another name.",
+                        window,
+                        cx,
+                    );
+                    return false;
+                }
+                this.write_to(id, path, window, cx)
+            })
+            .unwrap_or(false)
         })
     }
 
-    /// Ask before discarding unsaved changes. Resolves to whether to proceed.
+    /// Ask before discarding the active tab's unsaved changes. Resolves to
+    /// whether to proceed.
     fn confirm_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
-        if !self.is_dirty() {
+        let tab = self.tab();
+        if !tab.is_dirty() {
             return Task::ready(true);
         }
+        let id = tab.id;
         let detail = format!(
             "{} has unsaved changes.",
-            Document::display_name(self.named_path().as_deref())
+            Document::display_name(tab.named_path().as_deref())
         );
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -901,7 +1455,7 @@ impl Smep {
         );
 
         cx.spawn_in(window, async move |this, cx| match answer.await {
-            Ok(0) => match this.update_in(cx, |this, window, cx| this.save_task(window, cx)) {
+            Ok(0) => match this.update_in(cx, |this, window, cx| this.save_task(id, window, cx)) {
                 Ok(saved) => saved.await,
                 Err(_) => false,
             },
@@ -910,54 +1464,86 @@ impl Smep {
         })
     }
 
-    fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
-        let proceed = self.confirm_discard(window, cx);
+    /// Ask about every tab with unsaved changes, one after the other, each
+    /// shown while it is asked about. Resolves to whether to proceed: false
+    /// as soon as one is cancelled (or fails to save).
+    fn confirm_discard_all(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let dirty: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.is_dirty())
+            .map(|tab| tab.id)
+            .collect();
         cx.spawn_in(window, async move |this, cx| {
-            if !proceed.await {
-                return;
+            for id in dirty {
+                let Ok(proceed) = this.update_in(cx, |this, window, cx| match this.tab_index(id) {
+                    Some(ix) => {
+                        this.activate(ix, window, cx);
+                        this.confirm_discard(window, cx)
+                    }
+                    None => Task::ready(true),
+                }) else {
+                    return false;
+                };
+                if !proceed.await {
+                    return false;
+                }
             }
-            let Ok(chosen) = this.update(cx, |_, cx| {
-                cx.prompt_for_paths(PathPromptOptions {
-                    files: true,
-                    directories: false,
-                    multiple: false,
-                    prompt: None,
-                })
-            }) else {
-                return;
-            };
+            true
+        })
+    }
+
+    fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = chosen.await else {
                 return;
             };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let _ = this.update_in(cx, |this, window, cx| this.load_path(path, window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                for path in paths {
+                    this.load_path(path, window, cx);
+                }
+            });
         })
         .detach();
     }
 
-    /// Open the file at `path` in this window, asking about unsaved changes
-    /// first. This is what a double-click in the file manager ends up in.
-    pub fn open_document_at(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let proceed = self.confirm_discard(window, cx);
-        cx.spawn_in(window, async move |this, cx| {
-            if proceed.await {
-                let _ = this.update_in(cx, |this, window, cx| this.load_path(path, window, cx));
+    /// Open the files at `paths`, each in a tab (a blank tab is used up
+    /// first, a file already open is shown); none opens an empty tab. This
+    /// is what a double-click in the file manager, and `smep FILE` while
+    /// smep runs, end up in.
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            if !self.tab().is_pristine() {
+                self.new_tab(window, cx);
             }
-        })
-        .detach();
+        } else {
+            for path in paths {
+                self.load_path(path, window, cx);
+            }
+        }
+        window.activate_window();
     }
 
-    /// Read `path` into the buffer, or report why not. A PDF, Word or text
-    /// file is converted into a new Markdown document instead.
+    /// Show `path`: its tab if it is open, else read into a tab (a file
+    /// that does not exist yet is a new document that saves there). A PDF,
+    /// Word or text file is converted into a new Markdown document instead.
     fn load_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.holds(&path)) {
+            self.activate(ix, window, cx);
+            return;
+        }
         if let Some(format) = convert::Format::for_import(&path) {
             self.import_path(path, format, window, cx);
             return;
         }
-        match Document::read(path.clone()) {
-            Ok(document) => self.load(document, window, cx),
+        match Document::open(path.clone()) {
+            Ok(document) => self.place(document, window, cx),
             Err(err) => self.report(
                 &format!("Could not open {}", path.display()),
                 &err.to_string(),
@@ -968,7 +1554,7 @@ impl Smep {
     }
 
     /// Convert `path` off the UI thread (a PDF can take a while), then
-    /// load the Markdown as a new, unsaved document.
+    /// show the Markdown as a new, unsaved document.
     fn import_path(
         &mut self,
         path: PathBuf,
@@ -984,7 +1570,7 @@ impl Smep {
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match converted {
-                Ok(document) => this.load(document, window, cx),
+                Ok(document) => this.place(document, window, cx),
                 Err(err) => this.report(
                     &format!("Could not import {}", path.display()),
                     &format!("{err:#}"),
@@ -998,21 +1584,13 @@ impl Smep {
 
     /// Pick a file to convert to Markdown: PDF, Word, HTML or text.
     fn import(&mut self, _: &Import, window: &mut Window, cx: &mut Context<Self>) {
-        let proceed = self.confirm_discard(window, cx);
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
         cx.spawn_in(window, async move |this, cx| {
-            if !proceed.await {
-                return;
-            }
-            let Ok(chosen) = this.update(cx, |_, cx| {
-                cx.prompt_for_paths(PathPromptOptions {
-                    files: true,
-                    directories: false,
-                    multiple: false,
-                    prompt: Some("Import".into()),
-                })
-            }) else {
-                return;
-            };
             let Ok(Ok(Some(paths))) = chosen.await else {
                 return;
             };
@@ -1037,7 +1615,7 @@ impl Smep {
     /// Ask where to put an export of the document with `extension`: next to
     /// it, named after it. Resolves to the chosen path.
     fn ask_export_path(&self, extension: &str, cx: &mut Context<Self>) -> Task<Option<PathBuf>> {
-        let named = self.named_path();
+        let named = self.tab().named_path();
         let directory = named
             .as_deref()
             .and_then(Path::parent)
@@ -1063,8 +1641,8 @@ impl Smep {
     /// moment) and write it where the user asks.
     fn export_pdf(&mut self, _: &ExportPdf, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = self.ask_export_path("pdf", cx);
-        let text = self.editor.read(cx).value();
-        let base = self.document_dir();
+        let text = self.tab().editor.read(cx).value();
+        let base = self.tab().document_dir();
         // Print is ink on paper: the light theme of the preview's family,
         // unless the user wrote a preamble of their own.
         let preamble = export::user_preamble(self.settings.dir())
@@ -1100,9 +1678,9 @@ impl Smep {
     /// The document as a standalone HTML page, written where the user asks.
     fn export_html(&mut self, _: &ExportHtml, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = self.ask_export_path("html", cx);
-        let text = self.editor.read(cx).value();
+        let text = self.tab().editor.read(cx).value();
         let title = export::first_heading(&text)
-            .unwrap_or_else(|| Document::display_name(self.named_path().as_deref()));
+            .unwrap_or_else(|| Document::display_name(self.tab().named_path().as_deref()));
         // The page wears the preview's theme, dark or light, unless the
         // user wrote a stylesheet of their own.
         let stylesheet = export::user_stylesheet(self.settings.dir())
@@ -1162,20 +1740,22 @@ impl Smep {
         .detach();
     }
 
-    /// Files dropped on the window: the first one opens (or, for a PDF,
-    /// Word or text file, is converted), after the unsaved-changes prompt.
+    /// Files dropped on the window: each opens in a tab (a PDF, Word or text
+    /// file is converted).
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = paths.paths().first() {
-            self.open_document_at(path.clone(), window, cx);
+        for path in paths.paths() {
+            self.load_path(path.clone(), window, cx);
         }
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        self.save_task(window, cx).detach();
+        let id = self.tab().id;
+        self.save_task(id, window, cx).detach();
     }
 
     fn save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
-        self.save_as_task(window, cx).detach();
+        let id = self.tab().id;
+        self.save_as_task(id, window, cx).detach();
     }
 
     /// A lone `/` on the cursor's line, with the cursor after it.
@@ -1188,11 +1768,11 @@ impl Smep {
     /// view, otherwise the source editor.
     fn active_editor(&self, cx: &App) -> ActiveEditor {
         if self.layout() == ViewMode::Rendered
-            && let Some(editor) = self.rendered.read(cx).active_editor()
+            && let Some(editor) = self.tab().rendered.read(cx).active_editor()
         {
             return ActiveEditor::Block(editor);
         }
-        ActiveEditor::Source(self.editor.clone())
+        ActiveEditor::Source(self.tab().editor.clone())
     }
 
     /// Window-space bounds of the cursor's line, once the editor has laid out.
@@ -1210,12 +1790,11 @@ impl Smep {
         }
         match self.active_editor(cx) {
             ActiveEditor::Source(_) if self.layout() == ViewMode::Rendered => {
-                self.rendered.read(cx).focus_handle().clone()
+                self.tab().rendered.read(cx).focus_handle().clone()
             }
             editor => editor.focus_handle(cx),
         }
     }
-
     /// Open a popup menu at `position`, replacing any menu already open.
     /// Actions in it dispatch from the editor, and focus returns there.
     fn open_menu(
@@ -1345,7 +1924,7 @@ impl Smep {
         let this = cx.entity();
         window.defer(cx, move |window, cx| {
             this.update(cx, |this, cx| {
-                this.editor.update(cx, |state, cx| {
+                this.tab().editor.clone().update(cx, |state, cx| {
                     let end = state.text().len();
                     state.set_selected_range(end..end, cx);
                 });
@@ -1358,7 +1937,7 @@ impl Smep {
     /// The last line answers `None` while it is scrolled out of view, and
     /// then nothing is "below the text".
     fn is_below_text(&self, position: Point<Pixels>, cx: &App) -> bool {
-        let state = self.editor.read(cx);
+        let state = self.tab().editor.read(cx);
         if !state.input_bounds().contains(&position) {
             return false;
         }
@@ -1450,10 +2029,11 @@ impl Render for Smep {
         };
         let palette = self.preview_theme().resolve(cx.theme());
         let style = palette.text_view_style(cx.theme().font_size);
-        let base = self.document_dir();
+        let tab = self.tab();
+        let base = tab.document_dir();
         let editing = self.editing;
         // Reading an empty document: a hint in place of the (empty) page.
-        let hint = (!editing && self.previewed.trim().is_empty()).then(|| {
+        let hint = (!editing && tab.previewed.trim().is_empty()).then(|| {
             div()
                 .text_color(palette.muted)
                 .child("Nothing to read yet. Write (the button in the title bar) to start.")
@@ -1481,10 +2061,11 @@ impl Render for Smep {
             .when(editing, |this| this.on_prepaint(follow_editor))
             .child(match hint {
                 Some(hint) => hint.into_any_element(),
-                None => TextView::new(&self.preview)
+                None => TextView::new(&tab.preview)
                     .scrollable(true)
                     .style(style)
                     .image_source(rendered::image_resolver(base.clone()))
+                    .code_block_actions(rendered::code_block_actions(palette))
                     .into_any_element(),
             });
 
@@ -1508,16 +2089,19 @@ impl Render for Smep {
             .size_full()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_editor_mouse_down))
             .child(
-                Editor::new(&self.editor)
+                Editor::new(&tab.editor)
                     .bordered(false)
                     .size_full()
                     .pl(px(28.))
                     .context_menu(context_menu),
             );
+        let rendered_view = tab.rendered.clone();
 
         let plus = self.render_plus(window, cx);
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
+        let tab_bar = self.render_tab_bar(cx);
+        let outline = self.outline_shown().then(|| self.render_outline(cx));
 
         let content = if !editing {
             // Reading: the document as one page, scrolled by the keys from
@@ -1534,7 +2118,7 @@ impl Render for Smep {
             match self.layout() {
                 ViewMode::Source => editor.into_any_element(),
                 ViewMode::Rendered => {
-                    self.rendered.update(cx, |rendered, cx| {
+                    rendered_view.update(cx, |rendered, cx| {
                         rendered.set_palette(palette, cx);
                         rendered.set_base(base.clone(), cx);
                     });
@@ -1550,7 +2134,7 @@ impl Render for Smep {
                                 this.open_theme_menu(event.position, window, cx);
                             }),
                         )
-                        .child(self.rendered.clone())
+                        .child(rendered_view)
                         .into_any_element()
                 }
                 ViewMode::Split => h_resizable("smep-split")
@@ -1584,9 +2168,22 @@ impl Render for Smep {
                 .on_action(cx.listener(Self::view_rendered))
                 .on_action(cx.listener(Self::toggle_editing))
                 .on_action(cx.listener(Self::toggle_menu_bar))
+                .on_action(cx.listener(Self::toggle_outline))
                 .on_action(cx.listener(Self::toggle_fullscreen))
+                .on_action(cx.listener(Self::new_tab_action))
+                .on_action(cx.listener(Self::close_tab_action))
+                .on_action(cx.listener(Self::next_tab))
+                .on_action(cx.listener(Self::previous_tab))
                 .child(title_bar)
-                .child(div().flex_1().min_h_0().w_full().child(content))
+                .children(tab_bar)
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .children(outline)
+                        .child(div().flex_1().min_w_0().h_full().child(content)),
+                )
                 .children(plus)
                 .children(menu),
         )
@@ -1687,7 +2284,7 @@ mod tests {
     }
 
     fn editor(smep: &Entity<Smep>, cx: &VisualTestContext) -> Entity<EditorState> {
-        cx.read(|cx| smep.read(cx).editor.clone())
+        cx.read(|cx| smep.read(cx).tab().editor.clone())
     }
 
     fn draw(cx: &mut VisualTestContext) {
@@ -1750,7 +2347,10 @@ mod tests {
 
         type_text(&editor, "# Hello", cx);
 
-        assert_eq!(cx.read(|cx| smep.read(cx).source.to_string()), "# Hello");
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).tab().source.to_string()),
+            "# Hello"
+        );
     }
 
     #[gpui_kit::test]
@@ -1760,12 +2360,12 @@ mod tests {
 
         type_text(&editor, "# One", cx);
         type_text(&editor, "# One two", cx);
-        assert_eq!(cx.read(|cx| smep.read(cx).previewed.to_string()), "");
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().previewed.to_string()), "");
 
         cx.executor().advance_clock(PREVIEW_DEBOUNCE);
         cx.run_until_parked();
         assert_eq!(
-            cx.read(|cx| smep.read(cx).previewed.to_string()),
+            cx.read(|cx| smep.read(cx).tab().previewed.to_string()),
             "# One two"
         );
     }
@@ -1776,7 +2376,7 @@ mod tests {
         let (smep, cx) = open(cx, &text);
         let editor = editor(&smep, cx);
         draw(cx);
-        let list = cx.read(|cx| smep.read(cx).preview.read(cx).list_state().clone());
+        let list = cx.read(|cx| smep.read(cx).tab().preview.read(cx).list_state().clone());
         assert_eq!(list.logical_scroll_top().item_ix, 0);
         assert!(list.item_count() > 100, "one item per paragraph");
 
@@ -1793,7 +2393,7 @@ mod tests {
         // No soft wrap kicks in for these short lines, so the display row the
         // editor reports is also the buffer line.
         let display_row = cx.read(|cx| editor.read(cx).visible_row_range().unwrap().start);
-        let top_line = cx.read(|cx| smep.read(cx).scroll_sync);
+        let top_line = cx.read(|cx| smep.read(cx).tab().scroll_sync);
         let top_line = top_line.expect("the editor has laid out");
         assert!(top_line > 100, "editor top line {top_line}");
         assert_eq!(top_line, display_row);
@@ -1807,7 +2407,7 @@ mod tests {
         let editor = editor(&smep, cx);
 
         assert_eq!(
-            cx.read(|cx| smep.read(cx).source.to_string()),
+            cx.read(|cx| smep.read(cx).tab().source.to_string()),
             "- one\n- two"
         );
         assert_eq!(value(&editor, cx), "- one\n- two");
@@ -1826,7 +2426,7 @@ mod tests {
         type_text(&editor, "after\r\n", cx);
         assert!(dirty(&smep, cx));
         assert_eq!(
-            cx.read(|cx| Smep::title_for(smep.read(cx).path.as_deref(), true)),
+            cx.read(|cx| Smep::title_for(smep.read(cx).tab().path.as_deref(), true)),
             "● notes.md — smep"
         );
 
@@ -1849,7 +2449,9 @@ mod tests {
         type_text(&editor, "fresh", cx);
 
         // The dialog is pending only once the task has asked for it.
-        let saved = cx.update(|window, cx| smep.update(cx, |this, cx| this.save_task(window, cx)));
+        let saved = cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.save_task(this.tab().id, window, cx))
+        });
         cx.simulate_new_path_selection({
             let target = target.clone();
             move |_| Some(target)
@@ -1858,7 +2460,7 @@ mod tests {
         assert!(saved.await);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "fresh");
         assert!(!dirty(&smep, cx));
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(target));
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), Some(target));
     }
 
     #[gpui_kit::test]
@@ -1867,12 +2469,14 @@ mod tests {
         let editor = editor(&smep, cx);
         type_text(&editor, "fresh", cx);
 
-        let saved = cx.update(|window, cx| smep.update(cx, |this, cx| this.save_task(window, cx)));
+        let saved = cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.save_task(this.tab().id, window, cx))
+        });
         cx.simulate_new_path_selection(|_| None);
 
         assert!(!saved.await);
         assert!(dirty(&smep, cx));
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), None);
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), None);
     }
 
     #[gpui_kit::test]
@@ -1900,7 +2504,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn open_replaces_the_buffer_and_resets_dirty(cx: &mut TestAppContext) {
+    fn open_fills_a_blank_tab_and_resets_dirty(cx: &mut TestAppContext) {
         let dir = TempDir::new("open");
         let path = dir.path("other.html");
         std::fs::write(&path, "<b>bold</b>").unwrap();
@@ -1908,7 +2512,6 @@ mod tests {
         let editor = editor(&smep, cx);
 
         cx.update(|window, cx| smep.update(cx, |this, cx| this.open(&Open, window, cx)));
-        // The task asks for the file only after the (clean) discard check resolves.
         cx.run_until_parked();
         assert!(cx.did_prompt_for_paths());
         cx.simulate_path_prompt_response({
@@ -1919,16 +2522,19 @@ mod tests {
 
         assert_eq!(value(&editor, cx), "<b>bold</b>");
         assert_eq!(
-            cx.read(|cx| smep.read(cx).previewed.to_string()),
+            cx.read(|cx| smep.read(cx).tab().previewed.to_string()),
             "<b>bold</b>",
             "open refreshes the preview at once, no debounce"
         );
         assert_eq!(
-            cx.read(|cx| smep.read(cx).source.to_string()),
+            cx.read(|cx| smep.read(cx).tab().source.to_string()),
             "<b>bold</b>"
         );
-        assert_eq!(cx.read(|cx| smep.read(cx).format), PreviewFormat::Html);
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(path));
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).tab().format),
+            PreviewFormat::Html
+        );
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), Some(path));
         assert!(!dirty(&smep, cx));
     }
 
@@ -1987,14 +2593,14 @@ mod tests {
         };
         let (smep, cx) = open_reading(cx, document, settings);
         draw(cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         let reading = |cx: &VisualTestContext| {
             cx.read(|cx| {
                 let this = smep.read(cx);
                 (
                     !this.is_editing(),
                     this.layout(),
-                    this.rendered.read(cx).is_read_only(),
+                    this.tab().rendered.read(cx).is_read_only(),
                 )
             })
         };
@@ -2055,7 +2661,7 @@ mod tests {
         let settings = Settings::default();
         let (smep, cx) = open_reading(cx, document, settings);
         draw(cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
 
         // Editing an .html file in the rendered view: the whole page is one
         // block, rendered as HTML, not Markdown's reading of the tags (which
@@ -2074,13 +2680,20 @@ mod tests {
             "Markdown would split it"
         );
 
-        // Opening a Markdown document switches the view back to blocks.
+        // A Markdown document, in a tab of its own, is in blocks.
         let notes = dir.path("notes.md");
         std::fs::write(&notes, "# T\n\npara\n").unwrap();
         cx.update(|window, cx| {
             smep.update(cx, |this, cx| this.load_path(notes.clone(), window, cx))
         });
         draw(cx);
+        let page_view = rendered;
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        assert_eq!(
+            cx.read(|cx| page_view.read(cx).format()),
+            PreviewFormat::Html,
+            "the page's tab is as it was"
+        );
         assert_eq!(
             cx.read(|cx| rendered.read(cx).format()),
             PreviewFormat::Markdown
@@ -2093,8 +2706,9 @@ mod tests {
         // Save As to .html while a block is open: the edit ends, one block again.
         rendered_mode(&smep, cx);
         activate_block(&smep, 5..9, cx);
-        let saved =
-            cx.update(|window, cx| smep.update(cx, |this, cx| this.save_as_task(window, cx)));
+        let saved = cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.save_as_task(this.tab().id, window, cx))
+        });
         let target = dir.path("notes.html");
         cx.simulate_new_path_selection({
             let target = target.clone();
@@ -2229,7 +2843,7 @@ mod tests {
         range: std::ops::Range<usize>,
         cx: &mut VisualTestContext,
     ) {
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         cx.update(|window, cx| {
             rendered.update(cx, |rendered, cx| rendered.activate(range, window, cx))
         });
@@ -2237,7 +2851,7 @@ mod tests {
     }
 
     fn active_block(smep: &Entity<Smep>, cx: &VisualTestContext) -> Entity<TextareaState> {
-        cx.read(|cx| smep.read(cx).rendered.read(cx).active_editor())
+        cx.read(|cx| smep.read(cx).tab().rendered.read(cx).active_editor())
             .expect("a block is being edited")
     }
 
@@ -2280,7 +2894,7 @@ mod tests {
         let (smep, cx) = open(cx, "# Title");
         let document = editor(&smep, cx);
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
 
         cx.update(|window, cx| {
             rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
@@ -2298,9 +2912,9 @@ mod tests {
 
         // CRLF documents get a CRLF gap.
         let (smep, cx) = open(cx, "a\r\nb");
-        let document = cx.read(|cx| smep.read(cx).editor.clone());
+        let document = cx.read(|cx| smep.read(cx).tab().editor.clone());
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         cx.update(|window, cx| {
             rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
         });
@@ -2315,7 +2929,7 @@ mod tests {
         let (smep, cx) = open(cx, "# Title");
         let document = editor(&smep, cx);
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         cx.update(|window, cx| {
             rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
         });
@@ -2363,7 +2977,7 @@ mod tests {
     fn a_click_below_the_blocks_starts_a_focused_block_at_the_end(cx: &mut TestAppContext) {
         let (smep, cx) = open(cx, "# Title");
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
 
         // Well under the one heading, inside the view.
         mouse_down(cx, MouseButton::Left, 300., 500.);
@@ -2394,15 +3008,17 @@ mod tests {
 
         assert_eq!(value(&editor, cx), "plain notes\n\nmore\n");
         assert!(dirty(&smep, cx), "converted text is not on disk yet");
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), None);
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), None);
         assert_eq!(
-            cx.read(|cx| Smep::title_for(smep.read(cx).named_path().as_deref(), true)),
+            cx.read(|cx| Smep::title_for(smep.read(cx).tab().named_path().as_deref(), true)),
             "● notes.md — smep"
         );
 
         // Save As suggests notes.md next to the original; saving there
         // makes it the document's own path.
-        let saved = cx.update(|window, cx| smep.update(cx, |this, cx| this.save_task(window, cx)));
+        let saved = cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.save_task(this.tab().id, window, cx))
+        });
         let target = dir.path("notes.md");
         cx.simulate_new_path_selection({
             let target = target.clone();
@@ -2421,32 +3037,38 @@ mod tests {
             "plain notes\n\nmore\n"
         );
         assert!(!dirty(&smep, cx));
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(target));
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), Some(target));
     }
 
     #[gpui_kit::test]
-    fn a_dropped_file_opens_after_the_unsaved_changes_prompt(cx: &mut TestAppContext) {
+    fn dropped_files_open_in_tabs_beside_unsaved_changes(cx: &mut TestAppContext) {
         use gpui_kit::{ExternalPaths, FileDropEvent};
 
         let dir = TempDir::new("drop");
         let dropped = dir.path("dropped.md");
         std::fs::write(&dropped, "# Dropped").unwrap();
+        let second = dir.path("second.md");
+        std::fs::write(&second, "second").unwrap();
         let (smep, cx) = open(cx, "");
         let editor = editor(&smep, cx);
         type_text(&editor, "unsaved", cx);
         draw(cx);
 
         let position = point(px(300.), px(300.));
-        let paths = ExternalPaths([dropped.clone()].into_iter().collect());
+        let paths = ExternalPaths([dropped.clone(), second.clone()].into_iter().collect());
         cx.simulate_event(FileDropEvent::Entered { position, paths });
         cx.simulate_event(FileDropEvent::Submit { position });
         cx.run_until_parked();
 
-        assert!(cx.has_pending_prompt(), "the unsaved edit is asked about");
-        cx.simulate_prompt_answer("Don't Save");
-        cx.run_until_parked();
-        assert_eq!(value(&editor, cx), "# Dropped");
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(dropped));
+        assert!(
+            !cx.has_pending_prompt(),
+            "the unsaved edit stays in its tab"
+        );
+        assert_eq!(value(&editor, cx), "unsaved");
+        assert_eq!(tabs(&smep, cx), (3, 2));
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), Some(second));
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.activate(1, window, cx)));
+        assert_eq!(value(&self::editor(&smep, cx), cx), "# Dropped");
     }
 
     #[gpui_kit::test]
@@ -2591,7 +3213,7 @@ mod tests {
         std::fs::write(&path, "# T\n\npara").unwrap();
         let (smep, cx) = open_document(cx, Document::read(path.clone()).unwrap());
         let editor = editor(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         let focus = |cx: &VisualTestContext| cx.read(|cx| smep.read(cx).menu_focus(cx));
 
         assert_eq!(
@@ -2682,7 +3304,7 @@ mod tests {
         let (smep, cx) = open(cx, "# Title\n\npara\n\n- x\n- y\n\n> quote");
         let document = editor(&smep, cx);
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         let check = |cx: &mut VisualTestContext, when: &str| {
             draw(cx);
             let text = value(&document, cx);
@@ -2720,7 +3342,7 @@ mod tests {
             let (smep, cx) = open(cx, start);
             let document = editor(&smep, cx);
             rendered_mode(&smep, cx);
-            let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+            let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
             cx.update(|window, cx| {
                 rendered.update(cx, |rendered, cx| rendered.activate_at_end(window, cx))
             });
@@ -2761,7 +3383,7 @@ mod tests {
         let (smep, cx) = open(cx, "# Title\n\npara");
         let document = editor(&smep, cx);
         rendered_mode(&smep, cx);
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         let active = |cx: &VisualTestContext| cx.read(|cx| rendered.read(cx).active_editor());
 
         // Typing in the source view moves the block.
@@ -2809,7 +3431,7 @@ mod tests {
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
 
-        let rendered = cx.read(|cx| smep.read(cx).rendered.clone());
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
         assert!(cx.read(|cx| rendered.read(cx).active_editor().is_none()));
         assert_eq!(value(&document, cx), "# Title\n\npara!");
         assert!(
@@ -2865,61 +3487,271 @@ mod tests {
         assert!(!cx.update(|window, _| window.is_fullscreen()));
     }
 
+    fn open_paths(smep: &Entity<Smep>, paths: Vec<PathBuf>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.open_paths(paths, window, cx)));
+        cx.run_until_parked();
+    }
+
+    fn tabs(smep: &Entity<Smep>, cx: &VisualTestContext) -> (usize, usize) {
+        cx.read(|cx| (smep.read(cx).tab_count(), smep.read(cx).active_tab()))
+    }
+
     #[gpui_kit::test]
-    fn opening_a_path_from_the_os_asks_about_unsaved_changes_first(cx: &mut TestAppContext) {
+    fn files_from_the_os_open_in_tabs_without_asking(cx: &mut TestAppContext) {
         let dir = TempDir::new("os-open");
         let path = dir.path("incoming.md");
         std::fs::write(&path, "# From Finder").unwrap();
         let (smep, cx) = open(cx, "");
-        let editor = editor(&smep, cx);
+        let first = editor(&smep, cx);
 
-        // Clean buffer: opens right away.
-        cx.update(|window, cx| {
-            smep.update(cx, |this, cx| {
-                this.open_document_at(path.clone(), window, cx)
-            })
-        });
-        cx.run_until_parked();
-        assert_eq!(value(&editor, cx), "# From Finder");
-        assert_eq!(cx.read(|cx| smep.read(cx).path.clone()), Some(path.clone()));
+        // The blank tab takes the first file.
+        open_paths(&smep, vec![path.clone()], cx);
+        assert_eq!(value(&first, cx), "# From Finder");
+        assert_eq!(tabs(&smep, cx), (1, 0));
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).tab().path.clone()),
+            Some(path.clone())
+        );
 
-        // Dirty buffer: the prompt comes first; "Cancel" keeps the edits.
-        type_text(&editor, "edited", cx);
+        // An edited document stays as it is: the next file gets a tab of its
+        // own, with no prompt.
+        type_text(&first, "edited", cx);
         let other = dir.path("other.md");
         std::fs::write(&other, "other").unwrap();
-        cx.update(|window, cx| {
-            smep.update(cx, |this, cx| {
-                this.open_document_at(other.clone(), window, cx)
-            })
-        });
+        open_paths(&smep, vec![other.clone()], cx);
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(tabs(&smep, cx), (2, 1));
+        assert_eq!(value(&editor(&smep, cx), cx), "other");
+        assert_eq!(value(&first, cx), "edited");
+        assert!(
+            dirty(&smep, cx),
+            "the window has unsaved changes, in a tab not shown"
+        );
+
+        // A file already open is shown, not opened again.
+        open_paths(&smep, vec![path.clone()], cx);
+        assert_eq!(tabs(&smep, cx), (2, 0));
+
+        // Nothing: an empty tab; nothing again while that tab is blank: no
+        // second one.
+        open_paths(&smep, Vec::new(), cx);
+        assert_eq!(tabs(&smep, cx), (3, 2));
+        assert_eq!(value(&editor(&smep, cx), cx), "");
+        open_paths(&smep, Vec::new(), cx);
+        assert_eq!(tabs(&smep, cx), (3, 2));
+
+        // A file in a folder that does not exist is reported.
+        open_paths(&smep, vec![dir.path("no/such.md")], cx);
+        assert!(cx.has_pending_prompt(), "an error dialog is shown");
+        cx.simulate_prompt_answer("OK");
+        assert_eq!(tabs(&smep, cx), (3, 2));
+
+        // A file not there yet, in a folder that is: a new document that
+        // saves there, in the blank tab.
+        open_paths(&smep, vec![dir.path("new.md")], cx);
+        assert_eq!(tabs(&smep, cx), (3, 2));
+        assert_eq!(
+            cx.read(|cx| smep.read(cx).tab().path.clone()),
+            Some(dir.path("new.md"))
+        );
+    }
+
+    #[gpui_kit::test]
+    fn tabs_switch_by_keyboard_and_close_after_asking(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "one");
+        draw(cx);
+        cx.simulate_keystrokes(&primary("t"));
+        assert_eq!(tabs(&smep, cx), (2, 1));
+        let second = editor(&smep, cx);
+        assert_eq!(value(&second, cx), "");
+        type_text(&second, "two", cx);
+        draw(cx);
+
+        cx.simulate_keystrokes("ctrl-tab");
+        assert_eq!(tabs(&smep, cx), (2, 0));
+        assert_eq!(value(&editor(&smep, cx), cx), "one");
+        cx.simulate_keystrokes("ctrl-shift-tab");
+        assert_eq!(tabs(&smep, cx), (2, 1), "back, round the end");
+        cx.simulate_keystrokes("ctrl-tab");
+        cx.simulate_keystrokes("ctrl-tab");
+        assert_eq!(tabs(&smep, cx), (2, 1), "forward, round the end");
+
+        // Closing the edited tab asks; Cancel keeps it.
+        cx.simulate_keystrokes(&primary("w"));
         assert!(cx.has_pending_prompt());
         cx.simulate_prompt_answer("Cancel");
         cx.run_until_parked();
-        assert_eq!(value(&editor, cx), "edited");
-
-        // "Don't Save" lets the new file in.
-        cx.update(|window, cx| {
-            smep.update(cx, |this, cx| {
-                this.open_document_at(other.clone(), window, cx)
-            })
-        });
+        assert_eq!(tabs(&smep, cx), (2, 1));
+        cx.simulate_keystrokes(&primary("w"));
         cx.simulate_prompt_answer("Don't Save");
         cx.run_until_parked();
-        assert_eq!(value(&editor, cx), "other");
+        assert_eq!(tabs(&smep, cx), (1, 0));
+        assert_eq!(value(&editor(&smep, cx), cx), "one");
         assert!(!dirty(&smep, cx));
 
-        // A missing file reports instead of failing silently.
-        cx.update(|window, cx| {
-            smep.update(cx, |this, cx| {
-                this.open_document_at(dir.path("missing.md"), window, cx)
-            })
-        });
+        // The last tab closed leaves a blank one; the window stays.
+        cx.simulate_keystrokes(&primary("w"));
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt(), "an error dialog is shown");
-        cx.simulate_prompt_answer("OK");
-        assert_eq!(value(&editor, cx), "other");
+        assert!(
+            !cx.has_pending_prompt(),
+            "a clean tab closes without asking"
+        );
+        assert_eq!(tabs(&smep, cx), (1, 0));
+        assert_eq!(value(&editor(&smep, cx), cx), "");
     }
 
+    #[gpui_kit::test]
+    async fn closing_the_window_asks_about_each_unsaved_tab(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "");
+        type_text(&editor(&smep, cx), "first", cx);
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.new_tab(window, cx)));
+        type_text(&editor(&smep, cx), "second", cx);
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.new_tab(window, cx)));
+        assert_eq!(tabs(&smep, cx), (3, 2));
+
+        // Each unsaved tab is shown while it is asked about; a Cancel stops.
+        let proceed = cx
+            .update(|window, cx| smep.update(cx, |this, cx| this.confirm_discard_all(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(tabs(&smep, cx), (3, 0));
+        cx.simulate_prompt_answer("Don't Save");
+        cx.run_until_parked();
+        assert_eq!(tabs(&smep, cx), (3, 1));
+        cx.simulate_prompt_answer("Cancel");
+        assert!(!proceed.await);
+
+        let proceed = cx
+            .update(|window, cx| smep.update(cx, |this, cx| this.confirm_discard_all(window, cx)));
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Don't Save");
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Don't Save");
+        assert!(proceed.await, "every tab answered");
+        assert!(!cx.has_pending_prompt(), "the blank tab is not asked about");
+    }
+
+    #[gpui_kit::test]
+    fn only_the_tab_on_screen_edits_blocks(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "# A\n\nfirst\n");
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 5..10, cx);
+        let first = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        assert!(cx.read(|cx| first.read(cx).active_editor().is_some()));
+
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.new_tab(window, cx)));
+        let second = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        assert!(cx.read(|cx| first.read(cx).is_read_only()), "the tab left");
+        assert!(
+            cx.read(|cx| first.read(cx).active_editor().is_none()),
+            "its edit ended"
+        );
+        assert!(!cx.read(|cx| second.read(cx).is_read_only()));
+
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.activate(0, window, cx)));
+        assert!(!cx.read(|cx| first.read(cx).is_read_only()));
+        assert!(cx.read(|cx| second.read(cx).is_read_only()));
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.set_editing(false, window, cx)));
+        assert!(cx.read(|cx| first.read(cx).is_read_only()), "reading");
+    }
+
+    #[gpui_kit::test]
+    fn several_files_on_the_command_line_open_in_tabs(cx: &mut TestAppContext) {
+        let dir = TempDir::new("cli-tabs");
+        let (a, b) = (dir.path("a.md"), dir.path("b.md"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let (smep, cx) = open_document(cx, Document::read(a.clone()).unwrap());
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                let documents = vec![
+                    Document::read(b.clone()).unwrap(),
+                    Document::read(a.clone()).unwrap(),
+                ];
+                this.add_documents(documents, window, cx)
+            })
+        });
+        assert_eq!(tabs(&smep, cx), (2, 0), "a.md twice is one tab");
+        assert_eq!(value(&editor(&smep, cx), cx), "a");
+
+        // Saving a.md's tab as b.md, which the other tab holds, is refused:
+        // one tab per file.
+        type_text(&editor(&smep, cx), "a, edited", cx);
+        let saved = cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.save_as_task(this.tab().id, window, cx))
+        });
+        cx.simulate_new_path_selection({
+            let b = b.clone();
+            move |_| Some(b)
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt(), "the refusal is reported");
+        cx.simulate_prompt_answer("OK");
+        drop(saved);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b", "b.md untouched");
+        assert_eq!(cx.read(|cx| smep.read(cx).tab().path.clone()), Some(a));
+        assert!(dirty(&smep, cx));
+    }
+
+    #[gpui_kit::test]
+    fn the_outline_lists_the_headings_and_jumps_to_them(cx: &mut TestAppContext) {
+        let filler = "Some text in a paragraph.\n\n".repeat(40);
+        let text = format!("# One\n\n{filler}## Two\n\n{filler}> ### Three, quoted\n\n{filler}");
+        let (smep, cx) = open_reading(
+            cx,
+            Document {
+                path: None,
+                text: text.clone(),
+                format: PreviewFormat::Markdown,
+                origin: None,
+            },
+            Settings::default(),
+        );
+        draw(cx);
+        cx.simulate_keystrokes(&primary("shift-l"));
+        assert!(cx.read(|cx| smep.read(cx).outline_shown()));
+        draw(cx);
+        let headings = cx.read(|cx| smep.read(cx).tab().headings.clone());
+        let titles: Vec<&str> = headings.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, ["One", "Two", "Three, quoted"]);
+
+        // Reading: the page scrolls to the heading's block.
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(2, window, cx)));
+        draw(cx);
+        let list = cx.read(|cx| smep.read(cx).reading_list(cx));
+        assert_eq!(list.logical_scroll_top().item_ix, headings[2].block);
+        assert_eq!(cx.read(|cx| smep.read(cx).current_heading(cx)), Some(2));
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(1, window, cx)));
+        draw(cx);
+        assert_eq!(list.logical_scroll_top().item_ix, headings[1].block);
+        assert_eq!(cx.read(|cx| smep.read(cx).current_heading(cx)), Some(1));
+
+        // Editing in the split: the editor's cursor goes to the heading.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.set_view_mode(ViewMode::Split, window, cx)
+            })
+        });
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(2, window, cx)));
+        draw(cx);
+        let editor = editor(&smep, cx);
+        assert_eq!(
+            cx.read(|cx| editor.read(cx).cursor_position().line as usize),
+            headings[2].line
+        );
+
+        // The block view: no edit left open, the heading's block on top.
+        rendered_mode(&smep, cx);
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(1, window, cx)));
+        draw(cx);
+        draw(cx);
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        assert_eq!(
+            cx.read(|cx| rendered.read(cx).top_block()),
+            headings[1].block
+        );
+        // Out of range: nothing happens.
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(9, window, cx)));
+    }
     #[gpui_kit::test]
     fn ctrl_s_reaches_the_save_action(cx: &mut TestAppContext) {
         let dir = TempDir::new("keys");
@@ -3031,7 +3863,7 @@ mod tests {
         assert_eq!(cx.read(|cx| editor.read(cx).cursor()), "intro\n# ".len());
         assert!(!menu_open(&smep, cx), "the menu closes after a choice");
         assert_eq!(
-            cx.read(|cx| smep.read(cx).source.to_string()),
+            cx.read(|cx| smep.read(cx).tab().source.to_string()),
             "intro\n# \nend",
             "the preview sees the inserted block"
         );
@@ -3175,7 +4007,7 @@ mod tests {
         assert_eq!(cx.read(|cx| editor.read(cx).cursor()), "text\n# ".len());
 
         let (smep, cx) = open(cx, "a\r\nb");
-        let crlf_editor = cx.read(|cx| smep.read(cx).editor.clone());
+        let crlf_editor = cx.read(|cx| smep.read(cx).tab().editor.clone());
         cx.update(|window, cx| {
             crlf_editor.update(cx, |state, cx| {
                 state.set_cursor_position(Position::new(0, 1), window, cx);

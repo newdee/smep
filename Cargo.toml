@@ -39,6 +39,7 @@ docx-rust = "0.1"
 futures = "0.3"
 gpui-kit = "0.8"
 htmd = "0.5"
+interprocess = "2"
 markdown = "1"
 pdf-inspector = { version = "1.25", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -52,8 +53,9 @@ typst-pdf = { version = "0.15", optional = true }
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 # AttachConsole, so a GUI-subsystem smep.exe still prints --version in a
-# terminal; CREATE_NO_WINDOW, so the cmd it runs for Settings shows no console.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
+# terminal; CREATE_NO_WINDOW, so the cmd it runs for Settings shows no console;
+# AllowSetForegroundWindow, so a second launch can hand the first its window.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

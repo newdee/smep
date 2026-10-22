@@ -88,6 +88,19 @@ fn parent_exists(path: &Path) -> bool {
 }
 
 /// Write `text` to `path`, replacing whatever was there.
+/// Whether `a` and `b` name the same file: equal as written, or equal once
+/// both are resolved (links, `..`, letter case on Windows). A path that
+/// cannot be resolved (no such file yet) is only equal as written.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 pub fn write(path: &Path, text: &str) -> io::Result<()> {
     std::fs::write(path, text)
 }
