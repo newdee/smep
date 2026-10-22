@@ -116,6 +116,24 @@ test reads the text back out of the PDF it made. On Linux, CI installs
 `fonts-dejavu-core fonts-noto-cjk` for that; a bare box without any font
 cannot export.
 
+## Icon
+
+`assets/icon/logo.svg` is the design (a cinnabar seal with an M on the
+Paper look's paper); `assets/icon/render.py` (Pillow) draws the same
+geometry at 16 to 1024 px and packs `smep.ico`. Run it after changing the
+design and commit the PNGs and the `.ico`. Where each platform takes it:
+
+- Windows: `build.rs` embeds `smep.ico` as resource 1 with `winresource`
+  (gpui loads icon 1 for the window; Explorer shows it). It needs the
+  Windows SDK's `rc.exe`; without it the build warns and goes on without
+  the icon.
+- macOS: the release workflow makes `smep.icns` from the PNGs with
+  `iconutil` and names it in `Info.plist` (`CFBundleIconFile`).
+- Linux: `smep.desktop` names `Icon=smep`; "Open Markdown Files with smep"
+  writes `smep-256.png` into `~/.local/share/icons/hicolor/256x256/apps/`,
+  and the release tarball carries it as `smep.png`. The window sets
+  `app_id` `smep` so the desktop matches it to the entry.
+
 ## Checks before pushing
 
 ```sh

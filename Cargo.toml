@@ -10,7 +10,17 @@ homepage = "https://github.com/newdee/smep"
 license = "MIT OR Apache-2.0"
 keywords = ["markdown", "editor", "preview", "gui", "gpui"]
 categories = ["text-editors"]
-include = ["src/**", "tests/**", "assets/themes/*", "Cargo.toml", "README.md", "LICENSE-*"]
+include = [
+    "src/**",
+    "tests/**",
+    "assets/themes/*",
+    "assets/icon/smep.ico",
+    "assets/icon/smep-256.png",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-*",
+]
 
 [features]
 default = ["pdf-import", "pdf-export"]
@@ -47,6 +57,11 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+
+# The icon in the .exe (build.rs); needs the Windows SDK's rc.exe, and
+# builds without the icon when that is missing.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6", features = ["test-support"] }

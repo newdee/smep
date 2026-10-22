@@ -1,5 +1,7 @@
 # smep — a Simple Markdown Editor & Previewer, written in Rust
 
+<p align="center"><img src="https://raw.githubusercontent.com/newdee/smep/main/assets/icon/smep-256.png" width="128" height="128" alt="smep: a cinnabar seal with an M on paper"></p>
+
 [![crates.io](https://img.shields.io/crates/v/smep.svg)](https://crates.io/crates/smep)
 [![CI](https://github.com/newdee/smep/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/smep/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -162,9 +164,10 @@ File, "Open Markdown Files with smep" does what the system allows:
   Settings page for it, where you choose smep next to `.md` once; Windows
   keeps that choice to itself. `scripts\register-windows.ps1` does the same
   registration from a terminal.
-- **Linux**: smep writes `~/.local/share/applications/smep.desktop` and runs
-  `xdg-mime default smep.desktop text/markdown`. (`assets/smep.desktop` is
-  the same file, for doing it by hand.)
+- **Linux**: smep writes `~/.local/share/applications/smep.desktop` (and
+  its icon into `~/.local/share/icons`) and runs `xdg-mime default
+  smep.desktop text/markdown`. (`assets/smep.desktop` and the `smep.png`
+  in the release tarball are the same files, for doing it by hand.)
 
 ## License
 

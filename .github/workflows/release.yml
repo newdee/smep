@@ -42,7 +42,8 @@ jobs:
         run: |
           mkdir -p dist stage
           cp target/release/smep assets/smep.desktop stage/
-          tar -C stage -czf "dist/smep-$VERSION-x86_64-linux.tar.gz" smep smep.desktop
+          cp assets/icon/smep-256.png stage/smep.png
+          tar -C stage -czf "dist/smep-$VERSION-x86_64-linux.tar.gz" smep smep.desktop smep.png
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -95,6 +96,13 @@ jobs:
             target/aarch64-apple-darwin/release/smep \
             target/x86_64-apple-darwin/release/smep \
             -output "$APP/Contents/MacOS/smep"
+          # The icon: the PNGs under assets/icon, named the way iconutil wants.
+          mkdir smep.iconset
+          for n in 16 32 128 256 512; do
+            cp "assets/icon/smep-$n.png" "smep.iconset/icon_${n}x${n}.png"
+            cp "assets/icon/smep-$((n * 2)).png" "smep.iconset/icon_${n}x${n}@2x.png"
+          done
+          iconutil -c icns smep.iconset -o "$APP/Contents/Resources/smep.icns"
           cat > "$APP/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -106,6 +114,7 @@ jobs:
             <key>CFBundleVersion</key><string>${VERSION#v}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION#v}</string>
             <key>CFBundleExecutable</key><string>smep</string>
+            <key>CFBundleIconFile</key><string>smep</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>LSMinimumSystemVersion</key><string>12.0</string>
             <key>NSHighResolutionCapable</key><true/>

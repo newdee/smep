@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- smep: a cinnabar seal with an M on warm white paper (the Paper look).
+       render.py draws the same geometry with Pillow for the PNGs and the .ico. -->
+  <rect x="4" y="4" width="1016" height="1016" rx="224" fill="#f8f7f3" stroke="#e4e1da" stroke-width="8"/>
+  <rect x="212" y="212" width="600" height="600" rx="72" fill="#c3423f"/>
+  <polyline points="322,668 322,372 512,590 702,372 702,668" fill="none" stroke="#f8f7f3" stroke-width="74" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

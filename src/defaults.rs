@@ -266,21 +266,33 @@ mod platform {
 
     pub const FILE_NAME: &str = "smep.desktop";
     const MIME_TYPES: [&str; 2] = ["text/markdown", "text/x-markdown"];
+    /// The icon the entry names, in the hicolor theme next to `applications`.
+    pub const ICON_PATH: &str = "icons/hicolor/256x256/apps/smep.png";
+    const ICON: &[u8] = include_bytes!("../assets/icon/smep-256.png");
 
     /// The desktop entry, pointing at `exe`.
     pub fn desktop_entry(exe: &Path) -> String {
         format!(
-            "[Desktop Entry]\nType=Application\nName=smep\nGenericName=Markdown Editor\nComment=A Simple Markdown Editor & Previewer, written in Rust\nExec={} %f\nIcon=text-markdown\nTerminal=false\nCategories=Office;TextEditor;Utility;\nMimeType=text/markdown;text/x-markdown;text/html;\nKeywords=markdown;editor;preview;\n",
+            "[Desktop Entry]\nType=Application\nName=smep\nGenericName=Markdown Editor\nComment=A Simple Markdown Editor & Previewer, written in Rust\nExec={} %f\nIcon=smep\nTerminal=false\nCategories=Office;TextEditor;Utility;\nMimeType=text/markdown;text/x-markdown;text/html;\nKeywords=markdown;editor;preview;\n",
             exe.display()
         )
     }
 
     /// Write the entry into `applications` (`~/.local/share/applications`
-    /// in use). Returns the file's path.
+    /// in use) and the icon it names into the icon theme beside it
+    /// (`~/.local/share/icons/...`). Returns the entry's path.
     pub fn install(applications: &Path, exe: &Path) -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(applications)?;
         let path = applications.join(FILE_NAME);
         std::fs::write(&path, desktop_entry(exe))?;
+        let icon = applications
+            .parent()
+            .unwrap_or(applications)
+            .join(ICON_PATH);
+        if let Some(dir) = icon.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(icon, ICON)?;
         Ok(path)
     }
 
@@ -321,14 +333,20 @@ mod platform {
         use super::*;
 
         #[test]
-        fn the_desktop_entry_names_the_running_binary() {
-            let dir = std::env::temp_dir().join(format!("smep-desktop-{}", std::process::id()));
+        fn the_desktop_entry_names_the_running_binary_and_brings_its_icon() {
+            let root = std::env::temp_dir().join(format!("smep-desktop-{}", std::process::id()));
+            let dir = root.join("applications");
             let path = install(&dir, Path::new("/opt/smep/bin/smep")).unwrap();
             let entry = std::fs::read_to_string(&path).unwrap();
             assert!(entry.contains("Exec=/opt/smep/bin/smep %f\n"));
             assert!(entry.contains("MimeType=text/markdown;"));
+            assert!(entry.contains("Icon=smep\n"));
             assert_eq!(path.file_name().unwrap(), FILE_NAME);
-            std::fs::remove_dir_all(&dir).unwrap();
+            // The icon lands in the theme next to `applications`, as a PNG.
+            let icon = std::fs::read(root.join(ICON_PATH)).unwrap();
+            assert_eq!(&icon[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(icon, ICON);
+            std::fs::remove_dir_all(&root).unwrap();
         }
     }
 }

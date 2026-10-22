@@ -139,6 +139,9 @@ fn main() {
             window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
             #[cfg(target_os = "linux")]
             window_decorations: Some(WindowDecorations::Client),
+            // The desktop matches the window to `smep.desktop` (and its
+            // icon) by this id on Linux.
+            app_id: Some("smep".to_string()),
             ..TitleBar::window_options()
         };
 
