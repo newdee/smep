@@ -20,6 +20,6 @@ Not done: gpui's X11-only `WindowOptions::icon` (an `RgbaImage`), which would sh
 |---|---|---|---|
 | 1 | mechanism, the real exe: `ExtractAssociatedIcon` on `target/debug/smep.exe` gives the seal (32 px); the taskbar shows it with the window open; `cargo fmt --check`, clippy `--all-targets`, full suite 103 + 4 (the Linux desktop-entry test runs on CI only) | clean | none |
 | 2 | packaging: `cargo package --list` carries `build.rs`, `assets/icon/smep.ico` and `assets/icon/smep-256.png`; `cargo package` builds the crate from the archive: 24 files (21 before), 605.8 KiB, verified build 14 s, `build.rs` ran from the package root and found the `.ico` | clean | none |
-| 3 | CI run __CI__ (ubuntu runs the desktop-entry test that checks the written PNG) | | |
+| 3 | CI run 39703196577 for `8187d09` (ubuntu runs the desktop-entry test that checks the written PNG; windows builds with `rc.exe`, no "builds without its icon" warning) | all green: ubuntu 5 m 13 s (103 + 3), windows 9 m 45 s (103 + 4), macos 24 m 56 s (101 + 3), 0 failed | none |
 
 The macOS `iconutil` step runs only in the release workflow; the iconset names in it (`icon_NxN.png`, `icon_NxN@2x.png` for N = 16, 32, 128, 256, 512) all have a PNG, checked against `assets/icon` by hand. The first release carrying it is the check.

@@ -14,12 +14,13 @@ place, block by block.
 
 ## Status
 
-`0.1.9` is the tenth release: the Paper look is now dfine-blog's (warm
-white or near-black paper, grey inks, cinnabar), the rendered document is
-typeset the blog's way in every preview theme, reading mode shows the
-document as one page (footnotes and selections work across blocks), and
-the title bar's toggle is Write / Read, no longer a second "Edit". On a
-Mac, `brew install --cask newdee/tap/smep` installs `smep.app` (Finder,
+`0.1.10` is the eleventh release: smep has an icon (a cinnabar seal with
+an M on paper) in the Windows executable, the macOS app and the Linux
+desktop entry. The Paper look is dfine-blog's (warm white or near-black
+paper, grey inks, cinnabar), the rendered document is typeset the blog's
+way in every preview theme, reading mode shows the document as one page
+(footnotes and selections work across blocks), and the title bar's toggle
+is Write / Read, no longer a second "Edit". On a Mac, `brew install --cask newdee/tap/smep` installs `smep.app` (Finder,
 Spotlight, the Dock, "Open With", no Terminal window) together with the
 `smep` command. Reading mode scrolls from the keyboard and renders `.html`
 files as pages, `smep notes.md` opens a new document when the file is not
