@@ -19,7 +19,7 @@ The request: "感觉默认预览还是不好看，我希望是 pdf reader 那种
 | C | behaviour kept: clicks in the block view | — | each block was first wrapped in a column-wide div, so a click in the margin beside a block reached the view and started a new block at the end. The column now sits inside each block (`rendered::column`), whose row is full width. New test `a_click_beside_a_blocks_text_edits_that_block` fails with the old layout and passes with the new one |
 | 1 (clean) | static: every new constant and method has a reader (3–6 references), README / dev.md say what the code does; `cargo fmt --check` 0, clippy `--all-targets` 0 (default and slim) | 126 + 5, slim 117 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times in a row | 126 + 5 each time | none |
-| 3 | the other platforms: CI | pending | |
+| 3 (clean) | the other platforms: CI run 40055735232 for `7486941`: ubuntu 6 m 22 s (127 + 4), windows 7 m 13 s (126 + 5), macos 18 m 30 s (125 + 4), 0 failed | clean | none |
 
 The screen smoke of the block view was cut short. The screenshot showed an input method window: the user was typing on the desktop. Synthetic keys could have reached their input, so the smoke stopped there. The block view's layout is covered by the click test.
 
