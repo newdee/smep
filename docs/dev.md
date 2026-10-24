@@ -140,7 +140,13 @@ frame. From the palette:
   markers, images, bold's underlay or the marks before h3 and h4, so
   those keep gpui-base's defaults on screen; nor for serif headings, kept
   out on screen because a CJK serif face with a bold is not on every
-  machine;
+  machine. The page being read is a reader's page: 800 px of paper (a
+  44 rem column between 48 px margins, `theme::PAGE_WIDTH`, `MEASURE`)
+  with a shadow, on `Palette::canvas` (the paper a shade darker), text at
+  the blog's 1.85 leading (set on the page; gpui-base's paragraphs inherit
+  the line height). The wheel over the canvas scrolls the page's list. The
+  block view keeps the same column and leading; the split's preview fills
+  its pane;
 - an HTML page: `export::stylesheet` writes all of it as CSS, the blog's
   rules nearly verbatim, and `export::code_boards` wraps each code block
   the Markdown rendering wrote in the blog's `figure.code` with its band;

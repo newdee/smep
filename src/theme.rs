@@ -140,6 +140,18 @@ pub const CODE_FRAME_DARK: f32 = 1.;
 /// The cinnabar top edge of a code board on dark paper, in pixels.
 pub const CODE_TOP_EDGE: f32 = 2.;
 
+/// The leading of running text: the blog's 1.85, a reader's loose page
+/// rather than a dense screen.
+pub const READING_LEADING: f32 = 1.85;
+
+/// The page being read: its width, and the paper either side of the text
+/// in it, which leaves the blog's 44 rem column.
+pub const PAGE_WIDTH: Pixels = px(800.);
+pub const PAGE_MARGIN: Pixels = px(48.);
+
+/// The column of text that leaves: 44 rem at 16 px.
+pub const MEASURE: Pixels = px(704.);
+
 impl PreviewTheme {
     pub fn label(self) -> &'static str {
         match self {
@@ -353,6 +365,27 @@ impl Palette {
             PreviewTheme::Paper
         };
         paper.palette().expect("Paper has a fixed palette")
+    }
+
+    /// What the page being read stands on: the paper a shade darker, as a
+    /// PDF reader's window around its page.
+    pub fn canvas(&self) -> Hsla {
+        let mut canvas = self.background;
+        canvas.l = if self.dark {
+            canvas.l * 0.55
+        } else {
+            (canvas.l - 0.06).max(0.)
+        };
+        canvas
+    }
+
+    /// The page's shadow on the canvas.
+    pub fn page_shadow(&self) -> Vec<BoxShadow> {
+        let alpha = if self.dark { 0.5 } else { 0.08 };
+        vec![
+            BoxShadow::new(px(0.), px(1.), hsla(0., 0., 0., alpha)).blur_radius(px(3.)),
+            BoxShadow::new(px(0.), px(8.), hsla(0., 0., 0., alpha * 0.75)).blur_radius(px(24.)),
+        ]
     }
 
     /// The accent, washed out: the code tab's ground, the mark under bold
@@ -672,6 +705,20 @@ mod tests {
         assert_eq!(style.code_block().border_widths.top, Some(px(10.).into()));
     }
 
+    #[test]
+    fn the_page_stands_on_a_darker_canvas() {
+        assert_eq!(PAGE_WIDTH - PAGE_MARGIN * 2., MEASURE, "the blog's column");
+        for theme in ALL {
+            let Some(palette) = theme.palette() else {
+                continue;
+            };
+            assert!(
+                palette.canvas().l < palette.background.l,
+                "{theme:?}: the canvas is darker than the paper"
+            );
+            assert_eq!(palette.page_shadow().len(), 2);
+        }
+    }
     #[test]
     fn names_parse_and_every_family_prints_light() {
         for theme in ALL {

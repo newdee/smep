@@ -2040,35 +2040,66 @@ impl Render for Smep {
         });
         // The one rendering of the whole document: the split view's preview
         // while editing, the page being read otherwise.
+        let body = match hint {
+            Some(hint) => hint.into_any_element(),
+            None => TextView::new(&tab.preview)
+                .scrollable(true)
+                .style(style)
+                .image_source(rendered::image_resolver(base.clone()))
+                .code_block_actions(rendered::code_block_actions(palette))
+                .into_any_element(),
+        };
+        // The page: the paper, the text set loose (the blog's leading). While
+        // reading it is a printed column, a page standing on the canvas as in
+        // a PDF reader; in the split it fills its pane.
+        let page = div()
+            .id("page")
+            .size_full()
+            .bg(palette.background)
+            .line_height(relative(theme::READING_LEADING))
+            .py_4()
+            .when(editing, |this| this.px_6())
+            .when(!editing, |this| {
+                this.max_w(theme::PAGE_WIDTH)
+                    .px(theme::PAGE_MARGIN)
+                    .shadow(palette.page_shadow())
+            })
+            .child(body);
+        let preview_list = tab.preview.read(cx).list_state().clone();
         let preview = div()
             .id("preview")
             .size_full()
             .overflow_hidden()
-            .bg(palette.background)
+            .flex()
+            .justify_center()
+            .bg(if editing {
+                palette.background
+            } else {
+                palette.canvas()
+            })
             .text_color(palette.foreground)
             .when_some(palette.font_family(), |this, family| {
                 this.font_family(family)
             })
-            .px_6()
-            .py_4()
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.open_theme_menu(event.position, window, cx);
                 }),
             )
+            // The wheel over the canvas beside the page scrolls the page,
+            // as anywhere in a reader's window.
+            .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
+                if preview_list.viewport_bounds().contains(&event.position) {
+                    return;
+                }
+                let delta = event.delta.pixel_delta(window.line_height());
+                preview_list.scroll_by(-delta.y);
+                cx.refresh_windows();
+            })
             // Only an editor on screen has a top line to follow.
             .when(editing, |this| this.on_prepaint(follow_editor))
-            .child(match hint {
-                Some(hint) => hint.into_any_element(),
-                None => TextView::new(&tab.preview)
-                    .scrollable(true)
-                    .style(style)
-                    .image_source(rendered::image_resolver(base.clone()))
-                    .code_block_actions(rendered::code_block_actions(palette))
-                    .into_any_element(),
-            });
-
+            .child(page);
         // Right-click: the editor moves the cursor to the click, then hands
         // over here while it is still borrowed, so the menu opens one step
         // later. An empty native menu is returned, so none shows.
@@ -2724,6 +2755,71 @@ mod tests {
         drop(saved);
     }
 
+    #[gpui_kit::test]
+    fn the_page_is_a_column_and_the_wheel_beside_it_scrolls(cx: &mut TestAppContext) {
+        use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+        let text: String = (1..=200).map(|n| format!("Paragraph {n}\n\n")).collect();
+        let document = Document {
+            path: None,
+            text,
+            format: PreviewFormat::Markdown,
+            origin: None,
+        };
+        let (smep, cx) = open_reading(cx, document, Settings::default());
+        draw(cx);
+        let list = cx.read(|cx| smep.read(cx).reading_list(cx));
+        let bounds = list.viewport_bounds();
+        // The text column is the page less its margins, no wider.
+        assert!(
+            bounds.size.width <= crate::theme::MEASURE + px(1.),
+            "{bounds:?}"
+        );
+        assert!(bounds.left() >= crate::theme::PAGE_MARGIN, "{bounds:?}");
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+
+        // The wheel over the paper beside the text scrolls the text.
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(bounds.left() - px(10.), bounds.center().y),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-600.))),
+            ..Default::default()
+        });
+        draw(cx);
+        assert!(
+            list.logical_scroll_top().item_ix > 0,
+            "{:?}",
+            list.logical_scroll_top()
+        );
+    }
+    #[gpui_kit::test]
+    fn a_click_beside_a_blocks_text_edits_that_block(cx: &mut TestAppContext) {
+        let (smep, cx) = open(cx, "First paragraph.\n\nSecond paragraph.\n");
+        rendered_mode(&smep, cx);
+        draw(cx);
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        let view = cx.read(|cx| rendered.read(cx).bounds());
+        // The text sits in the page's column; left of it, in the first
+        // block's row, is still the first block.
+        assert!(
+            view.size.width > crate::theme::MEASURE + px(100.),
+            "{view:?}"
+        );
+        mouse_down(
+            cx,
+            MouseButton::Left,
+            f32::from(view.left()) + 30.,
+            f32::from(view.top()) + 22.,
+        );
+        draw(cx);
+        let block = cx
+            .read(|cx| rendered.read(cx).active_editor())
+            .expect("a block is open");
+        assert_eq!(value(&block, cx), "First paragraph.");
+        assert_eq!(
+            value(&editor(&smep, cx), cx),
+            "First paragraph.\n\nSecond paragraph.\n",
+            "no new block at the end"
+        );
+    }
     #[gpui_kit::test]
     fn keys_scroll_the_document_while_reading(cx: &mut TestAppContext) {
         let text: String = (1..=200).map(|n| format!("Paragraph {n}\n\n")).collect();

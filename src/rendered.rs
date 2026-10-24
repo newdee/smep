@@ -18,7 +18,7 @@ use crate::app::PreviewFormat;
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, ImageLocation};
-use crate::theme::Palette;
+use crate::theme::{self, Palette};
 
 /// How a rendering finds the document's images: a relative path is a file
 /// next to the document, in `base` (see [`io::locate_image`]).
@@ -207,6 +207,12 @@ impl RenderedView {
     #[cfg(test)]
     pub fn is_read_only(&self) -> bool {
         self.read_only
+    }
+
+    /// Where the view is on screen, as of the last frame.
+    #[cfg(test)]
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.scroll.bounds()
     }
 
     #[cfg(test)]
@@ -519,8 +525,9 @@ impl Render for RenderedView {
             items.push(
                 div()
                     .id("empty")
+                    .w_full()
                     .text_color(muted)
-                    .child(hint)
+                    .child(column().child(hint))
                     .into_any_element(),
             );
         }
@@ -536,6 +543,9 @@ impl Render for RenderedView {
             .when_some(palette.font_family(), |this, family| {
                 this.font_family(family)
             })
+            // Set loose, as when reading; each block keeps its text in the
+            // page's column while the whole row stays the block's to click.
+            .line_height(relative(theme::READING_LEADING))
             .px_6()
             .py_4()
             .gap_3()
@@ -557,6 +567,11 @@ impl Render for RenderedView {
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.deactivate(window, cx)))
             .children(items)
     }
+}
+
+/// The page's column of text, centred in the row.
+fn column() -> Div {
+    div().w_full().max_w(theme::MEASURE).mx_auto()
 }
 
 impl RenderedView {
@@ -587,13 +602,15 @@ impl RenderedView {
                 }),
             )
             .child(
-                match self.format {
-                    PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
-                    PreviewFormat::Html => TextView::html(("block-text", ix), source),
-                }
-                .style(style)
-                .image_source(image_resolver(self.base.clone()))
-                .code_block_actions(code_block_actions(palette)),
+                column().child(
+                    match self.format {
+                        PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
+                        PreviewFormat::Html => TextView::html(("block-text", ix), source),
+                    }
+                    .style(style)
+                    .image_source(image_resolver(self.base.clone()))
+                    .code_block_actions(code_block_actions(palette)),
+                ),
             )
             .into_any_element()
     }
@@ -610,9 +627,11 @@ impl RenderedView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(
-                Textarea::new(&active.editor)
-                    .bordered(false)
-                    .appearance(false),
+                column().child(
+                    Textarea::new(&active.editor)
+                        .bordered(false)
+                        .appearance(false),
+                ),
             )
             .into_any_element()
     }

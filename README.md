@@ -63,8 +63,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   `settings.toml` under the platform config directory (`~/.config/smep`,
   `~/Library/Application Support/smep`, `%APPDATA%\smep`, or
   `$SMEP_CONFIG_DIR`).
-- Opens reading: the document rendered as one page, nothing to click into
-  by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
+- Opens reading: the document rendered as one page, the way a PDF reader
+  shows one (a column of text a printed page wide, set loose, on paper
+  standing on a darker ground; the wheel scrolls it from anywhere),
+  nothing to click into by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
   Home / End, the arrows). The Write button in the title bar (or Ctrl+E)
   brings the editor in the view mode you last used; Read (or Ctrl+E again)
   puts it away.
