@@ -65,9 +65,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   `settings.toml` under the platform config directory (`~/.config/smep`,
   `~/Library/Application Support/smep`, `%APPDATA%\smep`, or
   `$SMEP_CONFIG_DIR`).
-- Opens reading: the document rendered as one page, the way a PDF reader
-  shows one (a column of text a printed page wide, set loose, on paper
-  standing on a darker ground; the wheel scrolls it from anywhere),
+- Opens reading: the document rendered as one page, set loose (the
+  blog's 1.85 leading) in a column centred on the paper, its width yours
+  (View, Text Width: narrow, medium, wide or full; the wheel and the
+  scrollbar at the window's edge scroll it from anywhere),
   nothing to click into by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
   Home / End, the arrows). The Write button in the title bar (or Ctrl+E)
   brings the editor in the view mode you last used; Read (or Ctrl+E again)
@@ -82,9 +83,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   second one); Ctrl+T a new one, Ctrl+W closes one, Ctrl+Tab moves on. A
   file opened from the file manager, or `smep FILE` while smep is running,
   lands in a tab of the window that is already open.
-- The outline: the document's headings beside it (the Outline button,
-  or Ctrl+Shift+L); a click goes to that section, and the section being
-  read is marked.
+- The outline: the document's headings beside it, shown from the start;
+  a click goes to that section, and the section being read is marked.
+  Fold it away (its ‹, the Outline button or Ctrl+Shift+L) to a strip
+  along the edge, and unfold it from there.
 - Open, save, save as; an unsaved-changes prompt before a tab or the
   window closes, for each document with changes.
 - Other documents become Markdown: drop a PDF, Word (.docx) or text file on

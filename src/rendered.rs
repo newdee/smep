@@ -131,6 +131,9 @@ pub struct RenderedView {
     palette: Palette,
     /// The document's directory, where its relative images are.
     base: Option<PathBuf>,
+    /// The width of the column the text runs in (the page being read's),
+    /// or None for the whole view.
+    measure: Option<Pixels>,
     /// Read-only: blocks are shown, never opened for editing (the state
     /// reading mode leaves the view in; the document is read in the preview).
     read_only: bool,
@@ -173,6 +176,7 @@ impl RenderedView {
             blocks_text: SharedString::default(),
             palette: Palette::from_app(cx.theme()),
             base: None,
+            measure: None,
             read_only: false,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -196,6 +200,14 @@ impl RenderedView {
     pub fn set_base(&mut self, base: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.base != base {
             self.base = base;
+            cx.notify();
+        }
+    }
+
+    /// The column the text runs in: as wide as measure, or the view.
+    pub fn set_measure(&mut self, measure: Option<Pixels>, cx: &mut Context<Self>) {
+        if self.measure != measure {
+            self.measure = measure;
             cx.notify();
         }
     }
@@ -527,7 +539,7 @@ impl Render for RenderedView {
                     .id("empty")
                     .w_full()
                     .text_color(muted)
-                    .child(column().child(hint))
+                    .child(column(self.measure).child(hint))
                     .into_any_element(),
             );
         }
@@ -569,9 +581,12 @@ impl Render for RenderedView {
     }
 }
 
-/// The page's column of text, centred in the row.
-fn column() -> Div {
-    div().w_full().max_w(theme::MEASURE).mx_auto()
+/// A column of text measure wide (the whole row for None), centred.
+fn column(measure: Option<Pixels>) -> Div {
+    div()
+        .w_full()
+        .when_some(measure, |this, measure| this.max_w(measure))
+        .mx_auto()
 }
 
 impl RenderedView {
@@ -602,7 +617,7 @@ impl RenderedView {
                 }),
             )
             .child(
-                column().child(
+                column(self.measure).child(
                     match self.format {
                         PreviewFormat::Markdown => TextView::markdown(("block-text", ix), source),
                         PreviewFormat::Html => TextView::html(("block-text", ix), source),
@@ -627,7 +642,7 @@ impl RenderedView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(
-                column().child(
+                column(self.measure).child(
                     Textarea::new(&active.editor)
                         .bordered(false)
                         .appearance(false),

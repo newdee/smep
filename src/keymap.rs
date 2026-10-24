@@ -27,7 +27,11 @@ gpui_kit::actions!(
         NewTab,
         CloseTab,
         NextTab,
-        PreviousTab
+        PreviousTab,
+        TextNarrow,
+        TextMedium,
+        TextWide,
+        TextFull
     ]
 );
 
@@ -136,6 +140,16 @@ pub fn native_menus() -> Vec<Menu> {
                 MenuItem::action("Rendered", ViewRendered),
                 MenuItem::separator(),
                 MenuItem::action("Outline", ToggleOutline),
+                MenuItem::submenu(Menu {
+                    name: "Text Width".into(),
+                    items: vec![
+                        MenuItem::action("Narrow", TextNarrow),
+                        MenuItem::action("Medium", TextMedium),
+                        MenuItem::action("Wide", TextWide),
+                        MenuItem::action("Full Width", TextFull),
+                    ],
+                    disabled: false,
+                }),
                 MenuItem::action("Next Tab", NextTab),
                 MenuItem::action("Previous Tab", PreviousTab),
                 MenuItem::action("Toggle Menu Bar", ToggleMenuBar),

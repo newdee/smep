@@ -35,11 +35,11 @@ use crate::insert;
 use crate::io::{self, Document};
 use crate::keymap::{
     self, CloseTab, ExportHtml, ExportPdf, Import, MakeDefault, NewTab, NextTab, Open, PreviousTab,
-    Quit, Save, SaveAs, ToggleEditing, ToggleFullscreen, ToggleMenuBar, ToggleOutline,
-    ViewRendered, ViewSource, ViewSplit,
+    Quit, Save, SaveAs, TextFull, TextMedium, TextNarrow, TextWide, ToggleEditing,
+    ToggleFullscreen, ToggleMenuBar, ToggleOutline, ViewRendered, ViewSource, ViewSplit,
 };
 use crate::rendered::{self, RenderedEvent, RenderedView};
-use crate::settings::{Settings, ViewMode};
+use crate::settings::{Settings, TextWidth, ViewMode};
 use crate::theme::{self, PreviewTheme};
 
 /// How long typing has to pause before the preview re-parses.
@@ -244,6 +244,9 @@ const LINE_STEP: Pixels = px(40.);
 
 /// The outline's width.
 const OUTLINE_WIDTH: Pixels = px(240.);
+
+/// What is left of the outline when it is folded away: a strip to unfold it.
+const OUTLINE_STRIP: Pixels = px(18.);
 
 fn preview_state(
     format: PreviewFormat,
@@ -704,7 +707,7 @@ impl Smep {
     }
 
     pub fn outline_shown(&self) -> bool {
-        self.settings.outline
+        !self.settings.outline_folded
     }
 
     fn save_settings(&self) {
@@ -736,7 +739,7 @@ impl Smep {
     }
 
     fn toggle_outline(&mut self, _: &ToggleOutline, _: &mut Window, cx: &mut Context<Self>) {
-        self.settings.outline = !self.settings.outline;
+        self.settings.outline_folded = !self.settings.outline_folded;
         self.save_settings();
         cx.notify();
     }
@@ -770,6 +773,7 @@ impl Smep {
         let editing = self.editing;
         let menu_bar = self.menu_bar_shown();
         let outline = self.outline_shown();
+        let text_width = self.text_width();
         let current_theme = self.preview_theme();
         let this = cx.weak_entity();
 
@@ -858,6 +862,22 @@ impl Smep {
                         }
                         submenu
                     });
+                    let widths = PopupMenu::build(window, cx, |mut submenu, _, _| {
+                        for candidate in TextWidth::ALL {
+                            let action: Box<dyn Action> = match candidate {
+                                TextWidth::Narrow => Box::new(TextNarrow),
+                                TextWidth::Medium => Box::new(TextMedium),
+                                TextWidth::Wide => Box::new(TextWide),
+                                TextWidth::Full => Box::new(TextFull),
+                            };
+                            submenu = submenu.item(
+                                PopupMenuItem::new(candidate.label())
+                                    .checked(candidate == text_width)
+                                    .action(action),
+                            );
+                        }
+                        submenu.action_context(focus.clone())
+                    });
                     menu.separator()
                         .item(
                             PopupMenuItem::new("Outline")
@@ -865,6 +885,7 @@ impl Smep {
                                 .action(Box::new(ToggleOutline)),
                         )
                         .item(PopupMenuItem::submenu("Preview Theme", themes))
+                        .item(PopupMenuItem::submenu("Text Width", widths))
                         .separator()
                         .menu("Next Tab", Box::new(NextTab))
                         .menu("Previous Tab", Box::new(PreviousTab))
@@ -1188,6 +1209,56 @@ impl Smep {
         cx.notify();
     }
 
+    /// The column of text while reading, or `None` for the whole pane.
+    fn reading_column(&self, window: &Window) -> Option<Pixels> {
+        let rems = self.settings.text_width.rems()?;
+        Some(window.rem_size() * rems)
+    }
+
+    /// The paper either side of the text while reading: what centres the
+    /// column in the pane (the window less the outline), never less than
+    /// `theme::PAGE_MARGIN`.
+    fn reading_margin(&self, window: &Window) -> Pixels {
+        let Some(column) = self.reading_column(window) else {
+            return theme::PAGE_MARGIN;
+        };
+        let outline = if self.outline_shown() {
+            OUTLINE_WIDTH
+        } else {
+            OUTLINE_STRIP
+        };
+        let pane = window.viewport_size().width - outline;
+        ((pane - column) / 2.).max(theme::PAGE_MARGIN)
+    }
+
+    pub fn text_width(&self) -> TextWidth {
+        self.settings.text_width
+    }
+
+    fn text_narrow(&mut self, _: &TextNarrow, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_width(TextWidth::Narrow, cx);
+    }
+
+    fn text_medium(&mut self, _: &TextMedium, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_width(TextWidth::Medium, cx);
+    }
+
+    fn text_wide(&mut self, _: &TextWide, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_width(TextWidth::Wide, cx);
+    }
+
+    fn text_full(&mut self, _: &TextFull, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_width(TextWidth::Full, cx);
+    }
+
+    /// Run the text this wide while reading; remembered.
+    pub fn set_text_width(&mut self, width: TextWidth, cx: &mut Context<Self>) {
+        if self.settings.text_width != width {
+            self.settings.text_width = width;
+            self.save_settings();
+            cx.notify();
+        }
+    }
     /// The heading the document is at: the last one at or above the top of
     /// what shows it.
     fn current_heading(&self, cx: &App) -> Option<usize> {
@@ -1254,6 +1325,28 @@ impl Smep {
                     this.jump_to_heading(ix, window, cx);
                 }))
         });
+        // Its head: the name, and the fold that puts it away.
+        let head = h_flex()
+            .w_full()
+            .pl_4()
+            .pr_2()
+            .pb_2()
+            .justify_between()
+            .text_xs()
+            .text_color(muted)
+            .child("OUTLINE")
+            .child(
+                div()
+                    .id("fold-outline")
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child("‹")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_outline(&ToggleOutline, window, cx);
+                    })),
+            );
         v_flex()
             .id("outline")
             .w(OUTLINE_WIDTH)
@@ -1264,6 +1357,7 @@ impl Smep {
             .bg(background)
             .border_r_1()
             .border_color(border)
+            .child(head)
             .when(headings.is_empty(), |this| {
                 this.child(
                     div()
@@ -1277,6 +1371,36 @@ impl Smep {
             .into_any_element()
     }
 
+    /// The outline folded away: a strip along the edge, a click unfolds it.
+    fn render_outline_strip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, hover, border, background) = (
+            theme.muted_foreground,
+            theme.muted,
+            theme.border,
+            theme.title_bar,
+        );
+        div()
+            .id("unfold-outline")
+            .w(OUTLINE_STRIP)
+            .flex_shrink_0()
+            .h_full()
+            .pt_3()
+            .flex()
+            .justify_center()
+            .bg(background)
+            .border_r_1()
+            .border_color(border)
+            .text_xs()
+            .text_color(muted)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child("›")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_outline(&ToggleOutline, window, cx);
+            }))
+            .into_any_element()
+    }
     /// The window title for a document: `● name — smep` while dirty.
     pub fn title_for(path: Option<&Path>, dirty: bool) -> String {
         let marker = if dirty { "● " } else { "" };
@@ -2040,55 +2164,45 @@ impl Render for Smep {
         });
         // The one rendering of the whole document: the split view's preview
         // while editing, the page being read otherwise.
+        // The paper fills the pane and the text runs in a column of the
+        // chosen width, centred by the paper either side; the list, and its
+        // scrollbar, span the pane.
+        let margin = if editing {
+            px(24.)
+        } else {
+            self.reading_margin(window)
+        };
         let body = match hint {
-            Some(hint) => hint.into_any_element(),
+            Some(hint) => div().px(margin).child(hint).into_any_element(),
             None => TextView::new(&tab.preview)
                 .scrollable(true)
                 .style(style)
                 .image_source(rendered::image_resolver(base.clone()))
                 .code_block_actions(rendered::code_block_actions(palette))
+                .px(margin)
                 .into_any_element(),
         };
-        // The page: the paper, the text set loose (the blog's leading). While
-        // reading it is a printed column, a page standing on the canvas as in
-        // a PDF reader; in the split it fills its pane.
-        let page = div()
-            .id("page")
-            .size_full()
-            .bg(palette.background)
-            .line_height(relative(theme::READING_LEADING))
-            .py_4()
-            .when(editing, |this| this.px_6())
-            .when(!editing, |this| {
-                this.max_w(theme::PAGE_WIDTH)
-                    .px(theme::PAGE_MARGIN)
-                    .shadow(palette.page_shadow())
-            })
-            .child(body);
         let preview_list = tab.preview.read(cx).list_state().clone();
         let preview = div()
             .id("preview")
             .size_full()
             .overflow_hidden()
-            .flex()
-            .justify_center()
-            .bg(if editing {
-                palette.background
-            } else {
-                palette.canvas()
-            })
+            .bg(palette.background)
             .text_color(palette.foreground)
             .when_some(palette.font_family(), |this, family| {
                 this.font_family(family)
             })
+            // The text set loose: the blog's leading.
+            .line_height(relative(theme::READING_LEADING))
+            .py_4()
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.open_theme_menu(event.position, window, cx);
                 }),
             )
-            // The wheel over the canvas beside the page scrolls the page,
-            // as anywhere in a reader's window.
+            // The wheel over the paper beside the text scrolls the text, as
+            // anywhere in a reader's window.
             .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
                 if preview_list.viewport_bounds().contains(&event.position) {
                     return;
@@ -2099,8 +2213,7 @@ impl Render for Smep {
             })
             // Only an editor on screen has a top line to follow.
             .when(editing, |this| this.on_prepaint(follow_editor))
-            .child(page);
-        // Right-click: the editor moves the cursor to the click, then hands
+            .child(body); // Right-click: the editor moves the cursor to the click, then hands
         // over here while it is still borrowed, so the menu opens one step
         // later. An empty native menu is returned, so none shows.
         let context_menu = {
@@ -2132,7 +2245,11 @@ impl Render for Smep {
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
         let tab_bar = self.render_tab_bar(cx);
-        let outline = self.outline_shown().then(|| self.render_outline(cx));
+        let outline = if self.outline_shown() {
+            self.render_outline(cx)
+        } else {
+            self.render_outline_strip(cx)
+        };
 
         let content = if !editing {
             // Reading: the document as one page, scrolled by the keys from
@@ -2149,9 +2266,11 @@ impl Render for Smep {
             match self.layout() {
                 ViewMode::Source => editor.into_any_element(),
                 ViewMode::Rendered => {
+                    let measure = self.reading_column(window);
                     rendered_view.update(cx, |rendered, cx| {
                         rendered.set_palette(palette, cx);
                         rendered.set_base(base.clone(), cx);
+                        rendered.set_measure(measure, cx);
                     });
                     // Right-click picks the theme here as on the split
                     // preview (an open block keeps its own menu and stops
@@ -2200,6 +2319,10 @@ impl Render for Smep {
                 .on_action(cx.listener(Self::toggle_editing))
                 .on_action(cx.listener(Self::toggle_menu_bar))
                 .on_action(cx.listener(Self::toggle_outline))
+                .on_action(cx.listener(Self::text_narrow))
+                .on_action(cx.listener(Self::text_medium))
+                .on_action(cx.listener(Self::text_wide))
+                .on_action(cx.listener(Self::text_full))
                 .on_action(cx.listener(Self::toggle_fullscreen))
                 .on_action(cx.listener(Self::new_tab_action))
                 .on_action(cx.listener(Self::close_tab_action))
@@ -2212,7 +2335,7 @@ impl Render for Smep {
                         .flex_1()
                         .min_h_0()
                         .w_full()
-                        .children(outline)
+                        .child(outline)
                         .child(div().flex_1().min_w_0().h_full().child(content)),
                 )
                 .children(plus)
@@ -2238,7 +2361,7 @@ mod tests {
     use crate::insert::{self, BlockKind};
     use crate::io::Document;
     use crate::keymap::{Open, Save};
-    use crate::settings::{Settings, ViewMode};
+    use crate::settings::{Settings, TextWidth, ViewMode};
     use crate::theme::PreviewTheme;
 
     /// `cmd-…` on macOS, `ctrl-…` elsewhere, as in the key bindings.
@@ -2756,7 +2879,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_page_is_a_column_and_the_wheel_beside_it_scrolls(cx: &mut TestAppContext) {
+    fn the_text_runs_in_a_column_and_the_wheel_beside_it_scrolls(cx: &mut TestAppContext) {
         use gpui_kit::{ScrollDelta, ScrollWheelEvent};
         let text: String = (1..=200).map(|n| format!("Paragraph {n}\n\n")).collect();
         let document = Document {
@@ -2767,14 +2890,26 @@ mod tests {
         };
         let (smep, cx) = open_reading(cx, document, Settings::default());
         draw(cx);
+        let (window, rem) =
+            cx.update(|window, _| (window.viewport_size().width, window.rem_size()));
         let list = cx.read(|cx| smep.read(cx).reading_list(cx));
         let bounds = list.viewport_bounds();
-        // The text column is the page less its margins, no wider.
+        // The default column, centred in the pane right of the outline; the
+        // paper either side is the list's own margin, so its scrollbar is at
+        // the pane's right edge.
+        assert_eq!(cx.read(|cx| smep.read(cx).text_width()), TextWidth::Medium);
+        let column = rem * 56.;
         assert!(
-            bounds.size.width <= crate::theme::MEASURE + px(1.),
-            "{bounds:?}"
+            window > column + super::OUTLINE_WIDTH,
+            "a wide window: {window:?}"
         );
-        assert!(bounds.left() >= crate::theme::PAGE_MARGIN, "{bounds:?}");
+        assert!((bounds.size.width - column).abs() < px(2.), "{bounds:?}");
+        let left = bounds.left() - super::OUTLINE_WIDTH;
+        let right = window - bounds.right();
+        assert!(
+            (left - right).abs() < px(2.),
+            "centred: {left:?} vs {right:?}"
+        );
         assert_eq!(list.logical_scroll_top().item_ix, 0);
 
         // The wheel over the paper beside the text scrolls the text.
@@ -2789,6 +2924,28 @@ mod tests {
             "{:?}",
             list.logical_scroll_top()
         );
+
+        // Full width: the text runs to the least margin either side.
+        cx.update(|_, cx| smep.update(cx, |this, cx| this.set_text_width(TextWidth::Full, cx)));
+        draw(cx);
+        let bounds = list.viewport_bounds();
+        assert_eq!(
+            bounds.left(),
+            super::OUTLINE_WIDTH + crate::theme::PAGE_MARGIN
+        );
+        assert_eq!(window - bounds.right(), crate::theme::PAGE_MARGIN);
+        // Narrow, with the outline folded: the strip is all that is left of it.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.set_text_width(TextWidth::Narrow, cx);
+                this.toggle_outline(&crate::keymap::ToggleOutline, window, cx);
+            })
+        });
+        draw(cx);
+        let bounds = list.viewport_bounds();
+        assert!((bounds.size.width - rem * 44.).abs() < px(2.), "{bounds:?}");
+        let left = bounds.left() - super::OUTLINE_STRIP;
+        assert!((left - (window - bounds.right())).abs() < px(2.));
     }
     #[gpui_kit::test]
     fn a_click_beside_a_blocks_text_edits_that_block(cx: &mut TestAppContext) {
@@ -2799,10 +2956,7 @@ mod tests {
         let view = cx.read(|cx| rendered.read(cx).bounds());
         // The text sits in the page's column; left of it, in the first
         // block's row, is still the first block.
-        assert!(
-            view.size.width > crate::theme::MEASURE + px(100.),
-            "{view:?}"
-        );
+        assert!(view.size.width > px(56. * 16. + 100.), "{view:?}");
         mouse_down(
             cx,
             MouseButton::Left,
@@ -3803,8 +3957,21 @@ mod tests {
             Settings::default(),
         );
         draw(cx);
+        // Shown from the start; the key folds it and unfolds it.
+        assert!(cx.read(|cx| smep.read(cx).outline_shown()));
+        cx.simulate_keystrokes(&primary("shift-l"));
+        assert!(!cx.read(|cx| smep.read(cx).outline_shown()));
         cx.simulate_keystrokes(&primary("shift-l"));
         assert!(cx.read(|cx| smep.read(cx).outline_shown()));
+        // Folded, a click on the strip left of it unfolds it.
+        cx.simulate_keystrokes(&primary("shift-l"));
+        draw(cx);
+        cx.simulate_click(point(px(9.), px(300.)), Default::default());
+        draw(cx);
+        assert!(
+            cx.read(|cx| smep.read(cx).outline_shown()),
+            "the strip unfolds it"
+        );
         draw(cx);
         let headings = cx.read(|cx| smep.read(cx).tab().headings.clone());
         let titles: Vec<&str> = headings.iter().map(|h| h.title.as_str()).collect();
