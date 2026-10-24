@@ -14,9 +14,11 @@ place, block by block.
 
 ## Status
 
-`0.1.13` is the fourteenth release: reading shows the document the way a
-PDF reader shows a page, a column of text a printed page wide, set loose
-(the blog's 1.85 leading), on paper standing on a darker ground. 0.1.12
+`0.1.14` is the fifteenth release: reading sets the text loose (the
+blog's 1.85 leading) in a centred column whose width you choose (View,
+Text Width: narrow, medium, wide or full), with the scrollbar at the
+window's edge, and the outline shows from the start and folds away to a
+strip. 0.1.12
 put documents in tabs (a file opened from the file manager, or `smep FILE`, while smep runs lands in a
 tab of the open window), an outline of the headings sits beside the
 document and a click goes to the section, and the document is set the

@@ -20,6 +20,6 @@ The request: "为什么滚动条不在最右边，而是在中间，另外为什
 | D | invariants: old settings files | — | 0.1.12 / 0.1.13 wrote `outline = false` into every saved file → a new key, `outline_folded`; the old key is ignored (test) |
 | 1 (clean) | static: `cargo fmt --check` 0, clippy 0 (default and slim) | 125 + 5, slim 116 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times in a row | 125 + 5 each time | none |
-| 3 | the other platforms: CI | pending | |
+| 3 (clean) | the other platforms: CI run 40064104002 for `42ee394`: ubuntu 7 m 28 s (126 + 4), macos 8 m 03 s (124 + 4), windows 8 m 59 s (125 + 5), 0 failed | clean | none |
 
 There was no screen smoke this time. The user was using the desktop (Phase 16's shot caught their input method), and even a screenshot raises the smep window over what they are doing. The layout is measured in the gpui tests instead: the column's width, its centring and the margins.
