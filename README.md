@@ -92,8 +92,10 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   lands in a tab of the window that is already open.
 - The outline: the document's headings beside it, shown from the start;
   a click goes to that section, and the section being read is marked.
-  Fold it away (its ‹, the Outline button or Ctrl+Shift+L) to a strip
-  along the edge, and unfold it from there.
+  The triangle before a section folds the headings it holds; 1, 2, 3 and
+  All in the outline's head list the headings down to that level. Fold it
+  away (its ‹, the Outline button or Ctrl+Shift+L) to a strip along the
+  edge, and unfold it from there.
 - Open, save, save as; an unsaved-changes prompt before a tab or the
   window closes, for each document with changes.
 - Other documents become Markdown: drop a PDF, Word (.docx) or text file on

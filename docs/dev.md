@@ -216,6 +216,20 @@ holding it. A jump scrolls the reading page's list to the block, moves the
 editor's cursor to the line (the split's preview follows the editor), or
 scrolls the block view.
 
+What the outline lists is `src/outline.rs`, pure and tested on its own:
+every heading at the chosen depth or above (`Settings::outline_depth`, 1 to
+6, the chips 1 / 2 / 3 / All in its head), less those inside a folded
+section. A section runs to the next heading of its level or above; it can
+fold when it holds a heading the depth lists, and its triangle (▾ / ▸)
+folds it without going there. Folds are the tab's own (`DocumentTab::folded`,
+not saved, cleared when a document is loaded into the tab) and are keyed by
+level, title and which of the same-titled headings it is
+(`outline::SectionKey`), so they stay with their section while the text
+above changes. The section being read, when folded away or past the depth,
+is marked by the nearest listed section holding it (`outline::shown_for`).
+The tests click the triangles and chips through gpui's `debug_selector`
+(recorded in debug test builds only).
+
 `src/instance.rs` keeps one smep per user and config directory: the
 running one listens on a local socket (`interprocess`; a named pipe on
 Windows, `smep.sock` in the config directory elsewhere), and a later

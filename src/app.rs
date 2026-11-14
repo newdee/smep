@@ -1,6 +1,7 @@
 //! The root view: the open documents in tabs, each a Markdown editor and
 //! its live preview, with the outline of the one on screen beside it.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ use crate::keymap::{
     Quit, Save, SaveAs, TextFull, TextMedium, TextNarrow, TextWide, ToggleEditing,
     ToggleFullscreen, ToggleMenuBar, ToggleOutline, ViewRendered, ViewSource, ViewSplit,
 };
+use crate::outline::{self, SectionKey};
 use crate::rendered::{self, RenderedEvent, RenderedView};
 use crate::settings::{Settings, TextWidth, ViewMode};
 use crate::theme::{self, PreviewTheme};
@@ -161,6 +163,8 @@ struct DocumentTab {
     blocks: Vec<usize>,
     /// The headings of `previewed`, for the outline.
     headings: Vec<Heading>,
+    /// The sections folded away in the outline (not in the document).
+    folded: HashSet<SectionKey>,
     /// The editor's top line last pushed to the preview.
     scroll_sync: Option<usize>,
     _subscriptions: Vec<Subscription>,
@@ -423,6 +427,7 @@ impl Smep {
             preview_refresh: None,
             blocks: Vec::new(),
             headings: Vec::new(),
+            folded: HashSet::new(),
             scroll_sync: None,
             _subscriptions: subscriptions,
         });
@@ -1287,8 +1292,42 @@ impl Smep {
         }
     }
 
+    /// The outline's lines for the tab on screen: its headings down to the
+    /// chosen depth, less those in a folded section.
+    pub fn outline_rows(&self) -> Vec<outline::Row> {
+        let tab = self.tab();
+        outline::rows(&tab.headings, &tab.folded, self.outline_depth())
+    }
+
+    /// The depth the outline lists to, 1 to 6, whatever a hand-edited
+    /// settings file says.
+    pub fn outline_depth(&self) -> u8 {
+        self.settings.outline_depth.clamp(1, outline::ALL_LEVELS)
+    }
+
+    /// Fold or unfold the section of heading `ix` in the outline of the tab
+    /// on screen (the document is untouched).
+    pub fn toggle_section(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let tab = &mut self.tabs[self.active];
+        let Some(key) = outline::keys(&tab.headings).into_iter().nth(ix) else {
+            return;
+        };
+        if !tab.folded.remove(&key) {
+            tab.folded.insert(key);
+        }
+        cx.notify();
+    }
+
+    /// List headings down to level `depth` in the outline (6 lists all).
+    pub fn set_outline_depth(&mut self, depth: u8, cx: &mut Context<Self>) {
+        self.settings.outline_depth = depth.clamp(1, outline::ALL_LEVELS);
+        self.save_settings();
+        cx.notify();
+    }
+
     /// The outline: the document's headings, indented by level, the one the
-    /// document is at marked. A click goes there.
+    /// document is at marked (or the folded section holding it). A click
+    /// goes there; the triangle before a section folds what it holds.
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.current_heading(cx);
         let theme = cx.theme();
@@ -1301,18 +1340,40 @@ impl Smep {
             theme.title_bar,
         );
         let headings = &self.tab().headings;
-        let entries = headings.iter().enumerate().map(|(ix, heading)| {
-            let marked = current == Some(ix);
-            div()
+        let rows = self.outline_rows();
+        let marked = current.and_then(|ix| outline::shown_for(headings, &rows, ix));
+        let entries = rows.iter().map(|row| {
+            let ix = row.ix;
+            let heading = &headings[ix];
+            // The triangle's column, empty for a section with nothing to
+            // fold, so the titles of one level line up.
+            let triangle = div()
+                .id(("fold-section", ix))
+                .debug_selector(|| format!("fold-section-{ix}"))
+                .w(px(12.))
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(muted)
+                .when(row.foldable, |this| {
+                    this.cursor_pointer()
+                        .hover(move |style| style.text_color(accent))
+                        .child(if row.folded { "▸" } else { "▾" })
+                        // Folding is not going there: the click stops here.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_section(ix, cx);
+                        }))
+                });
+            h_flex()
                 .id(("heading", ix))
                 .w_full()
-                .pl(px(16. + 12. * f32::from(heading.level.saturating_sub(1))))
+                .pl(px(4. + 12. * f32::from(heading.level.saturating_sub(1))))
                 .pr_3()
                 .py(px(3.))
                 .text_sm()
-                .truncate()
                 .cursor_pointer()
-                .text_color(if marked {
+                .text_color(if marked == Some(ix) {
                     accent
                 } else if heading.level <= 2 {
                     foreground
@@ -1320,12 +1381,36 @@ impl Smep {
                     muted
                 })
                 .hover(move |style| style.bg(hover))
-                .child(SharedString::from(heading.title.clone()))
+                .child(triangle)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(heading.title.clone())),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.jump_to_heading(ix, window, cx);
                 }))
         });
-        // Its head: the name, and the fold that puts it away.
+        // The depth: how deep the outline lists, one level to all.
+        let depth = self.outline_depth();
+        let depths = h_flex().gap_0p5().children(
+            [("1", 1), ("2", 2), ("3", 3), ("All", outline::ALL_LEVELS)].map(|(label, level)| {
+                div()
+                    .id(("outline-depth", usize::from(level)))
+                    .debug_selector(|| format!("outline-depth-{level}"))
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(depth == level, |this| this.text_color(accent).bg(hover))
+                    .hover(move |style| style.bg(hover))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_outline_depth(level, cx);
+                    }))
+            }),
+        );
+        // Its head: the name, the depth, and the fold that puts it away.
         let head = h_flex()
             .w_full()
             .pl_4()
@@ -1336,16 +1421,18 @@ impl Smep {
             .text_color(muted)
             .child("OUTLINE")
             .child(
-                div()
-                    .id("fold-outline")
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(hover))
-                    .child("‹")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_outline(&ToggleOutline, window, cx);
-                    })),
+                h_flex().gap_2().child(depths).child(
+                    div()
+                        .id("fold-outline")
+                        .px_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .child("‹")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_outline(&ToggleOutline, window, cx);
+                        })),
+                ),
             );
         v_flex()
             .id("outline")
@@ -1428,6 +1515,7 @@ impl Smep {
         let id = tab.id;
         tab.path = document.path;
         tab.origin = document.origin;
+        tab.folded.clear();
         tab.source = document.text.clone().into();
         tab.saved = if tab.origin.is_some() {
             SharedString::default()
@@ -4029,6 +4117,159 @@ mod tests {
         );
         // Out of range: nothing happens.
         cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(9, window, cx)));
+    }
+
+    #[gpui_kit::test]
+    fn a_hand_edited_depth_is_kept_in_range(cx: &mut TestAppContext) {
+        for (saved, depth, listed) in [(0, 1, 1), (9, 6, 3), (2, 2, 2)] {
+            let settings = Settings {
+                outline_depth: saved,
+                ..Settings::default()
+            };
+            let (smep, cx) = open_with(
+                cx,
+                Document {
+                    path: None,
+                    text: "# A\n\n## B\n\n### C\n".into(),
+                    format: PreviewFormat::Markdown,
+                    origin: None,
+                },
+                settings,
+            );
+            cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+            cx.run_until_parked();
+            draw(cx);
+            cx.read(|cx| {
+                let this = smep.read(cx);
+                assert_eq!(this.outline_depth(), depth, "saved {saved}");
+                assert_eq!(this.outline_rows().len(), listed, "saved {saved}");
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_outline_folds_a_section_and_lists_to_a_depth(cx: &mut TestAppContext) {
+        let filler = "Some text in a paragraph.\n\n".repeat(20);
+        let text = ["# A", "## A1", "### A1a", "## A2", "# B", "## B1"]
+            .map(|heading| format!("{heading}\n\n{filler}"))
+            .concat();
+        let dir = TempDir::new("outline-depth");
+        let settings = Settings {
+            path: Some(dir.path("settings.toml")),
+            ..Settings::default()
+        };
+        let (smep, cx) = open_reading(
+            cx,
+            Document {
+                path: None,
+                text,
+                format: PreviewFormat::Markdown,
+                origin: None,
+            },
+            settings,
+        );
+        draw(cx);
+        let listed = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let this = smep.read(cx);
+                this.outline_rows()
+                    .iter()
+                    .map(|row| this.tab().headings[row.ix].title.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.simulate_click(bounds.center(), Default::default());
+            draw(cx);
+        };
+        assert_eq!(listed(cx), ["A", "A1", "A1a", "A2", "B", "B1"]);
+        let reading = cx.read(|cx| smep.read(cx).reading_list(cx));
+        let top = reading.logical_scroll_top().item_ix;
+
+        // Its triangle folds A1: A1a goes, and the page does not move.
+        click(cx, "fold-section-1");
+        assert_eq!(listed(cx), ["A", "A1", "A2", "B", "B1"]);
+        assert_eq!(
+            reading.logical_scroll_top().item_ix,
+            top,
+            "folding is not going"
+        );
+        // Reading in A1a: the folded A1 is marked for it.
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.jump_to_heading(2, window, cx)));
+        draw(cx);
+        let marked = cx.read(|cx| {
+            let this = smep.read(cx);
+            crate::outline::shown_for(
+                &this.tab().headings,
+                &this.outline_rows(),
+                this.current_heading(cx).unwrap(),
+            )
+        });
+        assert_eq!(marked, Some(1));
+        // A folds over it; unfolding A shows A1 still folded.
+        click(cx, "fold-section-0");
+        assert_eq!(listed(cx), ["A", "B", "B1"]);
+        click(cx, "fold-section-0");
+        assert_eq!(listed(cx), ["A", "A1", "A2", "B", "B1"]);
+
+        // An edit above keeps the fold with its section.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| this.set_editing(true, window, cx));
+        });
+        let source = editor(&smep, cx);
+        let before = cx.read(|cx| source.read(cx).value());
+        type_text(&source, &format!("# New\n\n{before}"), cx);
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(listed(cx), ["New", "A", "A1", "A2", "B", "B1"]);
+
+        // The depth: one level, then two, then all; saved.
+        click(cx, "outline-depth-1");
+        assert_eq!(listed(cx), ["New", "A", "B"]);
+        assert!(
+            std::fs::read_to_string(dir.path("settings.toml"))
+                .unwrap()
+                .contains("outline_depth = 1")
+        );
+        click(cx, "outline-depth-2");
+        assert_eq!(listed(cx), ["New", "A", "A1", "A2", "B", "B1"]);
+        click(cx, "outline-depth-6");
+        assert_eq!(listed(cx), ["New", "A", "A1", "A2", "B", "B1"]);
+        // Unfolded, A1a is back (A1 is the third heading now).
+        click(cx, "fold-section-2");
+        assert_eq!(listed(cx), ["New", "A", "A1", "A1a", "A2", "B", "B1"]);
+
+        // The folds are the tab's: a new tab starts with none.
+        cx.simulate_keystrokes(&primary("t"));
+        draw(cx);
+        assert!(cx.read(|cx| smep.read(cx).tab().folded.is_empty()));
+
+        // A fold in a tab emptied again does not reach the file opened in it.
+        let fresh = editor(&smep, cx);
+        type_text(&fresh, "# A\n\n## A1\n", cx);
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        cx.update(|_, cx| smep.update(cx, |this, cx| this.toggle_section(0, cx)));
+        assert_eq!(listed(cx), ["A"]);
+        type_text(&fresh, "", cx);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                assert!(this.tab().is_pristine());
+                let document = Document {
+                    path: None,
+                    text: "# A\n\n## A1\n".into(),
+                    format: PreviewFormat::Markdown,
+                    origin: None,
+                };
+                this.place(document, window, cx);
+            })
+        });
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(listed(cx), ["A", "A1"]);
     }
     #[gpui_kit::test]
     fn ctrl_s_reaches_the_save_action(cx: &mut TestAppContext) {

@@ -20,6 +20,7 @@ mod insert;
 mod instance;
 mod io;
 mod keymap;
+mod outline;
 mod rendered;
 mod settings;
 mod theme;

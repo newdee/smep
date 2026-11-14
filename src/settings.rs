@@ -93,6 +93,8 @@ pub struct Settings {
     pub outline_folded: bool,
     /// How wide the text runs in the page being read.
     pub text_width: TextWidth,
+    /// The deepest heading level the outline lists, 1 to 6 (6: all).
+    pub outline_depth: u8,
     /// Where these settings live; `None` means they are never written.
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -106,6 +108,7 @@ impl Default for Settings {
             menu_bar: true,
             outline_folded: false,
             text_width: TextWidth::default(),
+            outline_depth: crate::outline::ALL_LEVELS,
             path: None,
         }
     }
@@ -196,7 +199,7 @@ mod tests {
         settings.save().unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
-            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true\noutline_folded = false\ntext_width = \"medium\""
+            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true\noutline_folded = false\ntext_width = \"medium\"\noutline_depth = 6"
         );
         assert_eq!(Settings::load_from(path.clone()), settings);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -210,6 +213,9 @@ mod tests {
         assert!(settings.menu_bar);
         assert!(!settings.outline_folded, "the outline shows unless folded");
         assert_eq!(settings.text_width, TextWidth::Medium);
+        assert_eq!(settings.outline_depth, 6, "every level");
+        let settings: Settings = toml::from_str("outline_depth = 2\n").unwrap();
+        assert_eq!(settings.outline_depth, 2);
         let settings: Settings =
             toml::from_str("outline_folded = true\ntext_width = \"full\"\n").unwrap();
         assert!(settings.outline_folded);
