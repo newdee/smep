@@ -118,11 +118,43 @@ cannot export.
 
 ## The look
 
-One design, three outputs: dfine-blog's article page
-(`src/styles/components.css` and `tokens.css` there). `src/theme.rs`
-holds it as a `Palette` (the blog's tokens: paper, ink, soft and faint
-ink, accent, wash, the code board's surface, frame and band, hairlines;
-serif or not) plus the type every palette shares: the heading scale
+A theme is a `Palette` in `src/theme.rs` (the blog's tokens: paper, ink,
+soft and faint ink, accent, wash, the code board's surface, frame and
+band, hairlines; serif or not) set in one of two designs, `Design::Book`
+or `Design::Blog`. Each design has three outputs: the window, the HTML
+page, the PDF.
+
+Book (Book, Book Dark, and System, which is one of them with the mode) is
+a printed book's page:
+
+- the face is Newsreader, bundled: `assets/fonts/Newsreader-*.ttf` are
+  static Regular, Italic, SemiBold, Bold and Bold Italic, cut from the
+  variable font (wght, opsz 18) with fontTools' instancer and renamed by
+  hand (the instancer cannot name an opsz instance; typographic family
+  "Newsreader", OS/2 weight and italic bit per face; a test reads them
+  back). `theme::install` adds them to gpui's text system, and `to_pdf`
+  hands them to Typst. CJK glyphs come from `theme::BOOK_FALLBACKS`,
+  gpui's per-font fallback list (`FontFallbacks`, set on the page by
+  `Palette::page`): Noto Serif SC, Source Han Serif, Songti SC, SimSun.
+  The test platform's text system resolves any name, so the fonts were
+  checked once against DirectWrite from a hidden window (5 distinct
+  faces; CJK in Noto Serif SC with the list, SimSun with SimSun alone,
+  the system's sans without one);
+- 1.125 times the application's text size (18 px at 16), leading 1.78
+  (Latin alone would take 1.6; CJK wants more), paragraphs 1.1 rem apart;
+- headings on a closer scale (1.75 / 1.32 / 1.1 / 1.0 / 0.92 / 0.92),
+  all semibold, leading 1.3, no rule and no marks;
+- code at 0.8 on a flat tint with rounded corners, the language as a
+  word in the accent; quotes behind gpui-base's hairline;
+- the column in ems of the body (`Palette::measure`: 32, 38, 50), so the
+  saved `text_width` keeps its meaning across designs; medium is 38 CJK
+  characters a line;
+- the HTML page uses the same values (`export::book_stylesheet`; the
+  reader's machine needs Newsreader, else Georgia), the PDF too
+  (`export::book_preamble`, 11.5 pt, no SimSun because it has no bold).
+
+Blog (every other theme) is dfine-blog's article page
+(`src/styles/components.css` and `tokens.css` there): the heading scale
 (1.62 / 1.46 / 1.2 / 1.02 / 0.92 / 0.92 of the body), bold to h3 and
 semibold below, a hairline under h2, a 0.95 rem paragraph gap, code at
 0.85 on a board (light paper: a 5 px frame, a faint shadow, a sunken
@@ -141,8 +173,8 @@ frame. From the palette:
   those keep gpui-base's defaults on screen; nor for serif headings, kept
   out on screen because a CJK serif face with a bold is not on every
   machine. The page being read is paper the width of the pane with the
-  text in a centred column (`settings::TextWidth`: 44, 56 or 72 rem, or
-  the pane less `theme::PAGE_MARGIN` either side): the column comes from
+  text in a centred column (`settings::TextWidth`: 44, 56 or 72 rem in
+  Blog, or the pane less `theme::PAGE_MARGIN` either side): the column comes from
   the `TextView`'s own horizontal padding (`Smep::reading_margin`), so
   the list and its scrollbar still span the pane. The text sits at the
   blog's 1.85 leading (set on the pane; gpui-base's paragraphs inherit the
@@ -161,7 +193,10 @@ frame. From the palette:
   so the preamble gives code an absolute size; and `par(..)` around a raw
   block drops its text from the page (a block in a paragraph), so the
   board sets `par` with a `set` rule instead (the read-back test caught
-  it).
+  it). Every inline call the writer emits (`#emph[..]`, `#link(..)[..]`,
+  ...) ends with a `;` of its own (`export::call`): Typst reads on past a
+  call into the text right after it, swallowing a `;` and taking `.x`,
+  `(` or `[` as more of the call.
 
 ## Tabs, the outline, one smep
 

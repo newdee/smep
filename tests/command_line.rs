@@ -29,15 +29,16 @@ fn help_prints_the_usage() {
     );
 }
 
-/// `--css` and `--typst` print the look of a theme, Paper when none is
+/// `--css` and `--typst` print the look of a theme, Book when none is
 /// named, and name the themes when the name is wrong.
 #[test]
 fn css_and_typst_print_the_look_of_a_theme() {
     let output = Command::new(SMEP).arg("--css").output().unwrap();
     assert!(output.status.success(), "{:?}", output.status);
     let css = String::from_utf8_lossy(&output.stdout);
-    assert!(css.starts_with("/* smep: the Paper look."), "{css}");
+    assert!(css.starts_with("/* smep: the Book look."), "{css}");
     assert!(css.contains("--paper:#f8f7f3"), "{css}");
+    assert!(css.contains("--font-body:Newsreader,"), "{css}");
 
     let output = Command::new(SMEP)
         .args(["--typst", "paper-dark"])
@@ -55,7 +56,9 @@ fn css_and_typst_print_the_look_of_a_theme() {
     assert_eq!(output.status.code(), Some(2));
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(
-        text.starts_with("smep: no preview theme named \"nope\"; one of paper, paper-dark,"),
+        text.starts_with(
+            "smep: no preview theme named \"nope\"; one of book, book-dark, paper, paper-dark,"
+        ),
         "{text}"
     );
     assert!(output.stdout.is_empty());

@@ -50,10 +50,10 @@ Options:
   --css [THEME]    Print the stylesheet an exported HTML page carries
   --typst [THEME]  Print the Typst preamble an exported PDF is typeset with
 
-THEME is a preview theme (paper, paper-dark, github, newsprint, night,
-sepia, solarized-light, solarized-dark); paper when left out. Saved as
-export.css or export.typ in smep's config directory, the printed text
-replaces the built-in one for every export.";
+THEME is a preview theme (book, book-dark, paper, paper-dark, github,
+newsprint, night, sepia, solarized-light, solarized-dark); book when left
+out. Saved as export.css or export.typ in smep's config directory, the
+printed text replaces the built-in one for every export.";
 
 /// A GUI-subsystem process gets no console of its own. When a terminal
 /// started smep, attach to the terminal's, so `--version`, `--help` and the
@@ -105,7 +105,7 @@ fn main() {
         Some(flag @ ("--css" | "--typst")) => {
             let name = std::env::args()
                 .nth(2)
-                .unwrap_or_else(|| "paper".to_string());
+                .unwrap_or_else(|| "book".to_string());
             let Some(palette) =
                 theme::PreviewTheme::parse(&name).and_then(theme::PreviewTheme::palette)
             else {

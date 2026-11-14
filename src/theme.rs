@@ -7,24 +7,63 @@
 //! installed by [`install`].
 //!
 //! The rendered Markdown can wear a look of its own, a [`PreviewTheme`];
-//! by default it follows the application. Whatever the colours, the type is
-//! one design, the blog's article page: its heading scale (a fading rule
-//! under h2, a cinnabar square before h3 and h4), its paragraph gap, code
-//! on a board (a thick frame on light paper, a thin one with a cinnabar top
-//! edge on dark, the language in a cinnabar tab), tables ruled across with
-//! a heavier line under the header, quotes on a wash. The same design
-//! dresses the window ([`Palette::text_view_style`]), the exported HTML page
-//! and the PDF (`export::stylesheet`, `export::preamble`); the window draws
-//! what its renderer has a hook for.
+//! by default it follows the application's light or dark in Book. A theme
+//! is colours set in one of two designs ([`Design`]):
+//!
+//! - **Book**, a printed book's page: a serif bundled with smep
+//!   (Newsreader; CJK text in the system's Song face) a size up, leading
+//!   for a reader, a narrower column, quiet headings without marks, code on
+//!   a flat tint, quotes behind a hairline.
+//! - **Blog**, the blog's article page: its heading scale (a fading rule
+//!   under h2, a cinnabar square before h3 and h4), its paragraph gap, code
+//!   on a board (a thick frame on light paper, a thin one with a cinnabar
+//!   top edge on dark, the language in a cinnabar tab), tables ruled across
+//!   with a heavier line under the header, quotes on a wash.
+//!
+//! The same design dresses the window ([`Palette::page`],
+//! [`Palette::text_view_style`]), the exported HTML page and the PDF
+//! (`export::stylesheet`, `export::preamble`); the window draws what its
+//! renderer has a hook for.
+
+use std::borrow::Cow;
 
 use gpui_kit::App;
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::component::{Theme, ThemeRegistry};
 use gpui_kit::{
-    BoxShadow, FontWeight, HighlightStyle, Hsla, Pixels, Rgba, StyleRefinement, Styled as _, hsla,
-    px, rems, rgb,
+    BoxShadow, FontFallbacks, FontWeight, HighlightStyle, Hsla, Pixels, Rgba, StyleRefinement,
+    Styled, hsla, px, relative, rems, rgb,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::settings::TextWidth;
+
+/// The serif Book is set in, bundled: Newsreader (Production Type, SIL Open
+/// Font License, `assets/fonts/Newsreader-OFL.txt`), its static weights cut
+/// from the variable font at an optical size of 18.
+pub const BOOK_FONT: &str = "Newsreader";
+
+/// The Newsreader faces, for the window ([`install`]) and the PDF.
+pub const BOOK_FONTS: [&[u8]; 5] = [
+    include_bytes!("../assets/fonts/Newsreader-Regular.ttf"),
+    include_bytes!("../assets/fonts/Newsreader-Italic.ttf"),
+    include_bytes!("../assets/fonts/Newsreader-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Newsreader-Bold.ttf"),
+    include_bytes!("../assets/fonts/Newsreader-BoldItalic.ttf"),
+];
+
+/// Where Book finds the glyphs Newsreader lacks (CJK above all): the Song
+/// faces of each platform, best first. A name not installed is skipped; past
+/// the list the system's own fallback takes over.
+pub const BOOK_FALLBACKS: &[&str] = &[
+    "Noto Serif SC",
+    "Noto Serif CJK SC",
+    "Source Han Serif SC",
+    "Source Han Serif CN",
+    "Songti SC",
+    "STSong",
+    "SimSun",
+];
 
 /// The two application themes, in gpui-kit's JSON theme format.
 pub const PAPER_THEMES: &str = include_str!("../assets/themes/paper.json");
@@ -33,10 +72,13 @@ pub const PAPER_THEMES: &str = include_str!("../assets/themes/paper.json");
 pub const PAPER_LIGHT: &str = "Paper";
 pub const PAPER_DARK: &str = "Paper Dark";
 
-/// Make Paper the application's light theme and Paper Dark its dark one.
-/// Call once after `gpui_kit::init`; `Theme::sync_system_appearance` then
-/// picks the one the system asks for.
+/// Make Paper the application's light theme and Paper Dark its dark one,
+/// and give the text system Book's serif. Call once after `gpui_kit::init`;
+/// `Theme::sync_system_appearance` then picks the one the system asks for.
 pub fn install(cx: &mut App) {
+    cx.text_system()
+        .add_fonts(BOOK_FONTS.iter().map(|&font| Cow::Borrowed(font)).collect())
+        .expect("the bundled fonts load");
     let registry = ThemeRegistry::global_mut(cx);
     registry
         .load_themes_from_str(PAPER_THEMES)
@@ -55,9 +97,13 @@ pub fn install(cx: &mut App) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PreviewTheme {
-    /// Follow the application: Paper, light or dark with the system.
+    /// Follow the application: Book, light or dark with the system.
     #[default]
     System,
+    /// Book's light page, whatever the system says.
+    Book,
+    /// Book's dark page, whatever the system says.
+    BookDark,
     /// Paper's light look, whatever the system says.
     Paper,
     /// Paper's dark look, whatever the system says.
@@ -71,8 +117,10 @@ pub enum PreviewTheme {
 }
 
 /// Every theme, in menu order.
-pub const ALL: [PreviewTheme; 9] = [
+pub const ALL: [PreviewTheme; 11] = [
     PreviewTheme::System,
+    PreviewTheme::Book,
+    PreviewTheme::BookDark,
     PreviewTheme::Paper,
     PreviewTheme::PaperDark,
     PreviewTheme::Github,
@@ -113,9 +161,40 @@ pub struct Palette {
     pub code_rail: Hsla,
     /// Hairlines: table rows, the quote's edge, the rule under h2.
     pub border: Hsla,
+    /// A serif body (Georgia) in the Blog design; Book is always serif.
     pub serif: bool,
     pub dark: bool,
+    pub design: Design,
 }
+
+/// The type a theme is set in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Design {
+    /// A printed book's page: Newsreader with the system's Song face for
+    /// CJK, a size up, a narrower column, quiet headings, flat code.
+    Book,
+    /// dfine-blog's article page: the application's sans at its size, a
+    /// rule under h2, code on a framed board.
+    Blog,
+}
+
+/// Book's body, as a factor of the application's text size: 18 px at 16.
+pub const BOOK_SCALE: f32 = 1.125;
+
+/// Book's leading: a reader's page for Chinese as for Latin (Latin alone
+/// would take 1.6; CJK text, with no ascenders to space it, wants more).
+pub const BOOK_LEADING: f32 = 1.78;
+
+/// Book's heading scale, as a factor of its body size: h1 to h6. Closer
+/// steps than the blog's, as a book sets them.
+const BOOK_HEADING_SCALE: [f32; 6] = [1.75, 1.32, 1.1, 1.0, 0.92, 0.92];
+
+/// Book's gap between paragraphs, in rems: about one line of its body.
+const BOOK_PARAGRAPH_GAP: f32 = 1.1;
+
+/// Book's column widths in ems of its body, narrow to wide: medium is 38
+/// CJK characters or about 80 Latin letters a line, a book's measure.
+pub const BOOK_MEASURE: [f32; 3] = [32., 38., 50.];
 
 /// The blog's heading scale, as a factor of the body size: h1 to h6.
 const HEADING_SCALE: [f32; 6] = [1.62, 1.46, 1.2, 1.02, 0.92, 0.92];
@@ -150,7 +229,9 @@ pub const PAGE_MARGIN: Pixels = px(48.);
 impl PreviewTheme {
     pub fn label(self) -> &'static str {
         match self {
-            Self::System => "System (Paper)",
+            Self::System => "System (Book)",
+            Self::Book => "Book",
+            Self::BookDark => "Book Dark",
             Self::Paper => "Paper",
             Self::PaperDark => "Paper Dark",
             Self::Github => "GitHub",
@@ -166,6 +247,8 @@ impl PreviewTheme {
     pub fn name(self) -> &'static str {
         match self {
             Self::System => "system",
+            Self::Book => "book",
+            Self::BookDark => "book-dark",
             Self::Paper => "paper",
             Self::PaperDark => "paper-dark",
             Self::Github => "github",
@@ -186,7 +269,8 @@ impl PreviewTheme {
     /// a light theme itself. A PDF is printed, and print is ink on paper.
     pub fn light(self) -> Self {
         match self {
-            Self::System | Self::PaperDark => Self::Paper,
+            Self::System | Self::BookDark => Self::Book,
+            Self::PaperDark => Self::Paper,
             Self::Night => Self::Github,
             Self::SolarizedDark => Self::SolarizedLight,
             other => other,
@@ -199,6 +283,46 @@ impl PreviewTheme {
         let name = self.label();
         Some(match self {
             Self::System => return None,
+            // A book's page on the application's paper: a softer ink than
+            // the blog's (serif strokes carry more weight), cinnabar, code
+            // and quotes on one flat tint.
+            Self::Book => Palette {
+                name,
+                background: hex(0xf8f7f3),
+                foreground: hex(0x26241f),
+                muted: hex(0x57534b),
+                faint: hex(0x8a867d),
+                link: hex(0xc3423f),
+                wash: hex(0xf1eee8),
+                code_background: hex(0xefece5),
+                code_surface: hex(0xf1eee8),
+                code_frame: hex(0xf1eee8),
+                code_rail: hex(0xf1eee8),
+                border: hex(0xe4e1da),
+                serif: true,
+                dark: false,
+                design: Design::Book,
+            },
+            // A book's page in a warm dark, lighter than the window around
+            // it, the way a lamp-lit page is: warm ink, the dark paper's
+            // brighter cinnabar.
+            Self::BookDark => Palette {
+                name,
+                background: hex(0x1e1c19),
+                foreground: hex(0xe3ddd2),
+                muted: hex(0xb3ab9e),
+                faint: hex(0x8c8579),
+                link: hex(0xdd625e),
+                wash: hex(0x26231f),
+                code_background: hex(0x2a2722),
+                code_surface: hex(0x26231f),
+                code_frame: hex(0x26231f),
+                code_rail: hex(0x26231f),
+                border: hex(0x36322b),
+                serif: true,
+                dark: true,
+                design: Design::Book,
+            },
             // The blog's light paper (src/styles/tokens.css): ink #1a1a18
             // on #f8f7f3, cinnabar, code on a whiteboard in an aluminium
             // frame under a grey band.
@@ -217,6 +341,7 @@ impl PreviewTheme {
                 border: hex(0xe4e1da),
                 serif: false,
                 dark: false,
+                design: Design::Blog,
             },
             // The blog's dark paper: ink #c1bfba on #121212, a brighter
             // cinnabar so links clear AA, the code board's band melted into
@@ -236,6 +361,7 @@ impl PreviewTheme {
                 border: hex(0x2b2a28),
                 serif: false,
                 dark: true,
+                design: Design::Blog,
             },
             Self::Github => Palette {
                 name,
@@ -252,6 +378,7 @@ impl PreviewTheme {
                 border: hex(0xd1d9e0),
                 serif: false,
                 dark: false,
+                design: Design::Blog,
             },
             Self::Newsprint => Palette {
                 name,
@@ -268,6 +395,7 @@ impl PreviewTheme {
                 border: hex(0xc9c8c3),
                 serif: true,
                 dark: false,
+                design: Design::Blog,
             },
             Self::Night => Palette {
                 name,
@@ -284,6 +412,7 @@ impl PreviewTheme {
                 border: hex(0x4b5259),
                 serif: false,
                 dark: true,
+                design: Design::Blog,
             },
             Self::Sepia => Palette {
                 name,
@@ -300,6 +429,7 @@ impl PreviewTheme {
                 border: hex(0xd9c9a3),
                 serif: true,
                 dark: false,
+                design: Design::Blog,
             },
             Self::SolarizedLight => Palette {
                 name,
@@ -316,6 +446,7 @@ impl PreviewTheme {
                 border: hex(0xd6cfb8),
                 serif: false,
                 dark: false,
+                design: Design::Blog,
             },
             Self::SolarizedDark => Palette {
                 name,
@@ -332,6 +463,7 @@ impl PreviewTheme {
                 border: hex(0x0f4a5a),
                 serif: false,
                 dark: true,
+                design: Design::Blog,
             },
         })
     }
@@ -351,15 +483,68 @@ impl PreviewTheme {
 }
 
 impl Palette {
-    /// The palette of the preview that follows the application: the
-    /// application wears Paper, so it is Paper or Paper Dark with the mode.
+    /// The palette of the preview that follows the application: Book or
+    /// Book Dark with the mode (Book's light paper is the application's).
     pub fn from_app(theme: &Theme) -> Self {
-        let paper = if theme.mode.is_dark() {
-            PreviewTheme::PaperDark
+        let book = if theme.mode.is_dark() {
+            PreviewTheme::BookDark
         } else {
-            PreviewTheme::Paper
+            PreviewTheme::Book
         };
-        paper.palette().expect("Paper has a fixed palette")
+        book.palette().expect("Book has a fixed palette")
+    }
+
+    /// The body's size for an application text size of `base`.
+    pub fn body_size(&self, base: Pixels) -> Pixels {
+        match self.design {
+            Design::Book => base * BOOK_SCALE,
+            Design::Blog => base,
+        }
+    }
+
+    /// The leading of running text.
+    pub fn leading(&self) -> f32 {
+        match self.design {
+            Design::Book => BOOK_LEADING,
+            Design::Blog => READING_LEADING,
+        }
+    }
+
+    /// The column of text `width` stands for, at a root size of `rem`, or
+    /// `None` for the whole pane. Blog measures in rems; Book in ems of its
+    /// (larger) body, to a narrower measure.
+    pub fn measure(&self, width: TextWidth, rem: Pixels) -> Option<Pixels> {
+        match self.design {
+            Design::Blog => Some(rem * width.rems()?),
+            Design::Book => {
+                let step = match width {
+                    TextWidth::Narrow => 0,
+                    TextWidth::Medium => 1,
+                    TextWidth::Wide => 2,
+                    TextWidth::Full => return None,
+                };
+                Some(self.body_size(rem) * BOOK_MEASURE[step])
+            }
+        }
+    }
+
+    /// `page` dressed as this palette's paper for an application text size
+    /// of `base`: the paper, the ink, the body's face, size and leading.
+    pub fn page<E: Styled>(&self, page: E, base: Pixels) -> E {
+        let mut page = page
+            .bg(self.background)
+            .text_color(self.foreground)
+            .text_size(self.body_size(base))
+            .line_height(relative(self.leading()));
+        if let Some(family) = self.font_family() {
+            page = page.font_family(family);
+        }
+        if self.design == Design::Book {
+            page.text_style().font_fallbacks = Some(FontFallbacks::from_fonts(
+                BOOK_FALLBACKS.iter().map(|&font| font.into()).collect(),
+            ));
+        }
+        page
     }
 
     /// The accent, washed out: the code tab's ground, the mark under bold
@@ -391,7 +576,10 @@ impl Palette {
                 color: Some(self.foreground),
                 ..Default::default()
             })
-            .with_paragraph_gap(rems(PARAGRAPH_GAP))
+            .with_paragraph_gap(rems(match self.design {
+                Design::Book => BOOK_PARAGRAPH_GAP,
+                Design::Blog => PARAGRAPH_GAP,
+            }))
             .with_heading(move |level| palette.heading_style(body, level))
             .with_code_block(self.code_board(body))
             // A table is ruled across, never framed or divided into
@@ -419,20 +607,29 @@ impl Palette {
             .with_dark(self.dark)
     }
 
-    /// A fenced code block: the board, with room along its top for the tab
-    /// that names the language. On light paper a whiteboard, a thick frame
-    /// with a faint shadow and a slightly sunken surface; on dark paper a
-    /// hairline frame whose top edge is a line of the accent.
+    /// A fenced code block, with room along its top for the language and
+    /// the Copy button. In Book a flat tint with rounded corners. In Blog
+    /// the board: on light paper a whiteboard, a thick frame with a faint
+    /// shadow and a slightly sunken surface; on dark paper a hairline frame
+    /// whose top edge is a line of the accent.
     pub fn code_board(&self, body: Pixels) -> StyleRefinement {
         let scale = f32::from(body) / 16.;
-        let board = StyleRefinement::default()
+        let tint = StyleRefinement::default()
             .bg(self.code_surface)
+            .text_size(body * self.design.code_scale())
+            .line_height(relative(CODE_LEADING));
+        if self.design == Design::Book {
+            return tint
+                .pt(body * 1.9)
+                .pb(body * 0.95)
+                .px(body * 1.1)
+                .rounded(px(8. * scale));
+        }
+        let board = tint
             .border_color(self.code_frame)
             .pt(body * 2.4)
             .pb(body)
-            .px(body * 1.2)
-            .text_size(body * CODE_SCALE)
-            .line_height(gpui_kit::relative(CODE_LEADING));
+            .px(body * 1.2);
         if self.dark {
             let frame = px(CODE_FRAME_DARK * scale);
             board
@@ -459,19 +656,22 @@ impl Palette {
         }
     }
 
-    /// A heading of `level` for text of `body` size: its size on the scale,
-    /// its weight (bold to h3, semibold below), its colour (h5 and h6 in
-    /// the soft ink), and under h2 a hairline.
+    /// A heading of `level` for text of `body` size: its size on the
+    /// design's scale, its weight, its colour (h5 and h6 in the soft ink).
+    /// In Book its lines set close; in Blog a hairline runs under h2.
     pub fn heading_style(&self, body: Pixels, level: u8) -> StyleRefinement {
-        let size = body * heading_scale(level);
+        let size = body * self.design.heading_scale(level);
         let style = StyleRefinement::default()
             .text_size(size)
-            .font_weight(heading_weight(level))
+            .font_weight(self.design.heading_weight(level))
             .text_color(if level >= 5 {
                 self.muted
             } else {
                 self.foreground
             });
+        if self.design == Design::Book {
+            return style.line_height(relative(BOOK_HEADING_LEADING));
+        }
         if level != 2 {
             return style;
         }
@@ -486,6 +686,9 @@ impl Palette {
 
     /// The body font family, or `None` to keep the application's.
     pub fn font_family(&self) -> Option<&'static str> {
+        if self.design == Design::Book {
+            return Some(BOOK_FONT);
+        }
         if !self.serif {
             return None;
         }
@@ -497,19 +700,42 @@ impl Palette {
     }
 }
 
-/// The size of a heading of `level` as a factor of the body size.
-pub fn heading_scale(level: u8) -> f32 {
-    HEADING_SCALE[usize::from(level.clamp(1, 6)) - 1]
-}
+/// Book's headings set their lines close: a heading that wraps stays one
+/// block, not two lines a body's leading apart.
+const BOOK_HEADING_LEADING: f32 = 1.3;
 
-/// The weight of a heading of `level`.
-pub fn heading_weight(level: u8) -> FontWeight {
-    if level <= 3 {
-        FontWeight::BOLD
-    } else {
-        FontWeight::SEMIBOLD
+impl Design {
+    /// The size of a heading of `level` as a factor of the body size.
+    pub fn heading_scale(self, level: u8) -> f32 {
+        let scale = match self {
+            Self::Book => BOOK_HEADING_SCALE,
+            Self::Blog => HEADING_SCALE,
+        };
+        scale[usize::from(level.clamp(1, 6)) - 1]
+    }
+
+    /// The weight of a heading of `level`: Book's are all semibold (a
+    /// serif's bold shouts); the blog's bold to h3, semibold below.
+    pub fn heading_weight(self, level: u8) -> FontWeight {
+        if self == Self::Blog && level <= 3 {
+            FontWeight::BOLD
+        } else {
+            FontWeight::SEMIBOLD
+        }
+    }
+
+    /// Code in blocks, as a factor of the body size: smaller in Book, whose
+    /// body is a size up.
+    pub fn code_scale(self) -> f32 {
+        match self {
+            Self::Book => BOOK_CODE_SCALE,
+            Self::Blog => CODE_SCALE,
+        }
     }
 }
+
+/// Book's code in blocks, as a factor of its body: 14.4 px at 18.
+pub const BOOK_CODE_SCALE: f32 = 0.8;
 
 /// A colour as CSS and Typst write it: `#rrggbb`.
 pub fn hex(colour: Hsla) -> String {
@@ -572,9 +798,161 @@ mod tests {
     }
 
     #[test]
-    fn the_type_is_one_design_whatever_the_colours() {
+    fn book_is_a_books_page() {
+        let books: Vec<_> = ALL
+            .into_iter()
+            .filter_map(PreviewTheme::palette)
+            .filter(|palette| palette.design == Design::Book)
+            .collect();
+        assert_eq!(books.len(), 2, "Book and Book Dark");
+        for palette in books {
+            let name = palette.name;
+            // Newsreader, CJK from the Song faces, a size up, a reader's
+            // leading, a book's measure in ems of that body.
+            assert_eq!(palette.font_family(), Some(BOOK_FONT), "{name}");
+            assert_eq!(palette.body_size(px(16.)), px(18.));
+            assert_eq!(palette.leading(), BOOK_LEADING);
+            assert_eq!(
+                palette.measure(TextWidth::Medium, px(16.)),
+                Some(px(18. * 38.))
+            );
+            assert_eq!(
+                palette.measure(TextWidth::Narrow, px(16.)),
+                Some(px(18. * 32.))
+            );
+            assert_eq!(
+                palette.measure(TextWidth::Wide, px(16.)),
+                Some(px(18. * 50.))
+            );
+            assert_eq!(palette.measure(TextWidth::Full, px(16.)), None);
+            let mut page = palette.page(gpui_kit::div(), px(16.));
+            let text = page.text_style().clone();
+            assert_eq!(text.font_size, Some(px(18.).into()), "{name}");
+            assert_eq!(text.font_family, Some(BOOK_FONT.into()));
+            assert_eq!(
+                text.font_fallbacks
+                    .as_ref()
+                    .map(FontFallbacks::fallback_list),
+                Some(
+                    &BOOK_FALLBACKS
+                        .iter()
+                        .map(|&f| f.to_string())
+                        .collect::<Vec<_>>()[..]
+                )
+            );
+            assert_eq!(text.line_height, Some(relative(BOOK_LEADING)));
+
+            let style = palette.text_view_style(px(18.));
+            assert_eq!(style.paragraph_gap(), rems(BOOK_PARAGRAPH_GAP));
+            let heading = |level| style.heading(level);
+            assert_eq!(heading(1).text.font_size, Some((px(18.) * 1.75).into()));
+            assert_eq!(heading(2).text.font_size, Some((px(18.) * 1.32).into()));
+            assert_eq!(heading(6).text.font_size, Some((px(18.) * 0.92).into()));
+            for level in 1..=6 {
+                // Semibold throughout, close lines, no rule, no mark.
+                assert_eq!(heading(level).text.font_weight, Some(FontWeight::SEMIBOLD));
+                assert_eq!(
+                    heading(level).text.line_height,
+                    Some(relative(BOOK_HEADING_LEADING))
+                );
+                assert_eq!(heading(level).border_widths.bottom, None, "{name} h{level}");
+            }
+            assert_eq!(heading(5).text.color, Some(palette.muted));
+            // Code on a flat tint: no frame, no shadow, a smaller size.
+            let board = style.code_block();
+            assert_eq!(
+                board.background,
+                Some(gpui_kit::Fill::Color(palette.code_surface.into()))
+            );
+            assert_eq!(board.border_widths.top, None, "{name}: no frame");
+            assert_eq!(board.border_widths.left, None);
+            assert!(board.box_shadow.is_none(), "{name}: no shadow");
+            assert_eq!(board.text.font_size, Some((px(18.) * 0.8).into()));
+            assert_eq!(board.corner_radii.top_left, Some(px(9.).into()));
+        }
+        // A Blog palette keeps the application's face, size and measure.
+        let paper = PreviewTheme::Paper.palette().unwrap();
+        assert_eq!(paper.font_family(), None);
+        assert_eq!(paper.body_size(px(16.)), px(16.));
+        assert_eq!(paper.leading(), READING_LEADING);
+        assert_eq!(
+            paper.measure(TextWidth::Medium, px(16.)),
+            Some(px(16. * 56.))
+        );
+        let mut page = paper.page(gpui_kit::div(), px(16.));
+        assert_eq!(page.text_style().font_fallbacks, None);
+        assert_eq!(page.text_style().font_family, None);
+    }
+
+    /// The bundled faces are the five a page needs, one each: what a text
+    /// system matches them by is the family name and the OS/2 table's
+    /// weight and italic bit. (The test platform's text system resolves any
+    /// name, so the files themselves are read here.)
+    #[test]
+    fn the_bundled_faces_are_newsreaders_five() {
+        fn find<'a>(font: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
+            let u16_at = |at: usize| usize::from(u16::from_be_bytes([font[at], font[at + 1]]));
+            let u32_at =
+                |at: usize| u32::from_be_bytes(font[at..at + 4].try_into().unwrap()) as usize;
+            (0..u16_at(4))
+                .map(|ix| 12 + 16 * ix)
+                .find(|&record| &font[record..record + 4] == tag)
+                .map(|record| &font[u32_at(record + 8)..][..u32_at(record + 12)])
+        }
+        fn table<'a>(font: &'a [u8], tag: &[u8; 4]) -> &'a [u8] {
+            find(font, tag).expect("the table is there")
+        }
+        // The family as Windows names it (name ID 16, UTF-16BE).
+        fn family(font: &[u8]) -> String {
+            let name = table(font, b"name");
+            let u16_at = |at: usize| usize::from(u16::from_be_bytes([name[at], name[at + 1]]));
+            let strings = u16_at(4);
+            (0..u16_at(2))
+                .map(|ix| 6 + 12 * ix)
+                .find(|&record| u16_at(record) == 3 && u16_at(record + 6) == 16)
+                .map(|record| {
+                    let text = &name[strings + u16_at(record + 10)..][..u16_at(record + 8)];
+                    let units: Vec<u16> = text
+                        .chunks(2)
+                        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                        .collect();
+                    String::from_utf16(&units).unwrap()
+                })
+                .expect("a typographic family name")
+        }
+        let faces: Vec<(u16, bool)> = BOOK_FONTS
+            .iter()
+            .map(|font| {
+                assert_eq!(family(font), BOOK_FONT);
+                let os2 = table(font, b"OS/2");
+                let weight = u16::from_be_bytes([os2[4], os2[5]]);
+                let italic = os2[63] & 1 == 1;
+                (weight, italic)
+            })
+            .collect();
+        assert_eq!(
+            faces,
+            [
+                (400, false),
+                (400, true),
+                (600, false),
+                (700, false),
+                (700, true)
+            ]
+        );
+        assert!(
+            BOOK_FONTS.iter().all(|font| find(font, b"fvar").is_none()),
+            "static faces, not the variable font"
+        );
+    }
+
+    #[test]
+    fn the_blog_type_is_one_design_whatever_the_colours() {
         for theme in ALL {
-            let Some(palette) = theme.palette() else {
+            let Some(palette) = theme
+                .palette()
+                .filter(|palette| palette.design == Design::Blog)
+            else {
                 continue;
             };
             let style = palette.text_view_style(px(16.));
@@ -689,7 +1067,8 @@ mod tests {
             }
         }
         assert_eq!(PreviewTheme::parse("Paper"), None, "names are kebab-case");
-        assert_eq!(PreviewTheme::System.light(), PreviewTheme::Paper);
+        assert_eq!(PreviewTheme::System.light(), PreviewTheme::Book);
+        assert_eq!(PreviewTheme::BookDark.light(), PreviewTheme::Book);
         assert_eq!(PreviewTheme::PaperDark.light(), PreviewTheme::Paper);
         assert_eq!(PreviewTheme::Night.light(), PreviewTheme::Github);
         assert_eq!(
@@ -765,7 +1144,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn paper_is_the_application_theme_in_both_modes(cx: &mut gpui_kit::TestAppContext) {
+    fn paper_is_the_application_theme_and_book_its_preview(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::component::{ActiveTheme as _, ThemeMode};
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -777,14 +1156,19 @@ mod tests {
             assert_eq!(cx.theme().caret, hex(0xc3423f), "the cursor is cinnabar");
             let heading = cx.theme().highlight_theme.style("title").unwrap();
             assert_eq!(heading.color, Some(hex(0xc3423f)));
-            // The preview that follows the application is the Paper palette.
+            // The preview that follows the application is Book, on the
+            // application's own light paper.
             assert_eq!(
                 Palette::from_app(cx.theme()),
-                PreviewTheme::Paper.palette().unwrap()
+                PreviewTheme::Book.palette().unwrap()
             );
             assert_eq!(
                 PreviewTheme::System.resolve(cx.theme()),
-                PreviewTheme::Paper.palette().unwrap()
+                PreviewTheme::Book.palette().unwrap()
+            );
+            assert_eq!(
+                Palette::from_app(cx.theme()).background,
+                cx.theme().background
             );
 
             Theme::change(ThemeMode::Dark, None, cx);
@@ -795,7 +1179,7 @@ mod tests {
             assert_eq!(heading.color, Some(hex(0xdd625e)));
             assert_eq!(
                 PreviewTheme::System.resolve(cx.theme()),
-                PreviewTheme::PaperDark.palette().unwrap()
+                PreviewTheme::BookDark.palette().unwrap()
             );
         });
     }

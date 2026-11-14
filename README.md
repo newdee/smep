@@ -61,14 +61,15 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 - A menu of blocks (headings, lists, task list, quote, code block, table,
   divider, image, link) wherever you ask for it: type `/` on an empty line,
   click the `+` beside one, click below the end of the text, or right-click.
-- Preview themes (Paper and Paper Dark, GitHub, Newsprint, Night, Sepia,
-  Solarized Light/Dark, or the application's own look): right-click the
-  preview or the rendered document. The choice is remembered in
+- Preview themes (Book and Book Dark, Paper and Paper Dark, GitHub,
+  Newsprint, Night, Sepia, Solarized Light/Dark, or System, which is Book
+  light or dark with the system): right-click the preview or the rendered
+  document. The choice is remembered in
   `settings.toml` under the platform config directory (`~/.config/smep`,
   `~/Library/Application Support/smep`, `%APPDATA%\smep`, or
   `$SMEP_CONFIG_DIR`).
-- Opens reading: the document rendered as one page, set loose (the
-  blog's 1.85 leading) in a column centred on the paper, its width yours
+- Opens reading: the document rendered as one page, set as a book sets it
+  in a column centred on the paper, its width yours
   (View, Text Width: narrow, medium, wide or full; the wheel and the
   scrollbar at the window's edge scroll it from anywhere),
   nothing to click into by accident, and the keyboard scrolls it (Page Up / Page Down, Space,
@@ -97,17 +98,25 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   the original. PDFs need a text layer; smep does no OCR. Images in Word
   files are not carried over.
 - Export as PDF (typeset by [Typst](https://typst.app), built in: headings,
-  lists, tables, code, quotes, footnotes, local images; CJK text uses the
-  system's fonts) or as a standalone HTML page, under File. Both wear the
+  lists, tables, code, quotes, footnotes, local images; Book's serif is
+  built in, CJK text uses the system's fonts) or as a standalone HTML page,
+  under File. Both wear the
   preview's look (a PDF the light one of its family: print is ink on
   paper). `smep --css` and `smep --typst` print the stylesheet and the
   Typst preamble behind them; saved as `export.css` or `export.typ` in
   the config directory, your edited copy is what every export uses.
+- Set like a book: the document reads in Book, the default, on screen, in
+  HTML and in PDF. Its serif is
+  [Newsreader](https://github.com/productiontype/Newsreader), built into
+  smep, with CJK text in the system's Song face (Noto Serif SC, Source Han
+  Serif, Songti SC, SimSun, the first one installed); 18 px at the default
+  size, a reader's leading, a column of about 38 CJK characters (medium),
+  quiet semibold headings, code on a flat tint, quotes behind a hairline.
 - Ink on paper: the application wears the Paper look of
   [dfine-blog](https://github.com/newdee/dfine-blog), light or dark with
   the system (warm white or near-black paper, grey inks, cinnabar for the
-  cursor, headings and links). The document is set the way the blog sets
-  an article, in every preview theme, on screen, in HTML and in PDF: its
+  cursor, headings and links). Every theme but Book is set the way the blog
+  sets an article, on screen, in HTML and in PDF: its
   heading scale with a fading hairline under h2, code on a board (a
   whiteboard in a thick aluminium frame on light paper, a thin frame with a
   cinnabar top edge on dark) with the language in a cinnabar tab and a Copy

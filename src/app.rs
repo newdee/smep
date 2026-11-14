@@ -1209,17 +1209,17 @@ impl Smep {
         cx.notify();
     }
 
-    /// The column of text while reading, or `None` for the whole pane.
-    fn reading_column(&self, window: &Window) -> Option<Pixels> {
-        let rems = self.settings.text_width.rems()?;
-        Some(window.rem_size() * rems)
+    /// The column of text while reading in `palette`, or `None` for the
+    /// whole pane.
+    fn reading_column(&self, palette: &theme::Palette, window: &Window) -> Option<Pixels> {
+        palette.measure(self.settings.text_width, window.rem_size())
     }
 
     /// The paper either side of the text while reading: what centres the
     /// column in the pane (the window less the outline), never less than
     /// `theme::PAGE_MARGIN`.
-    fn reading_margin(&self, window: &Window) -> Pixels {
-        let Some(column) = self.reading_column(window) else {
+    fn reading_margin(&self, palette: &theme::Palette, window: &Window) -> Pixels {
+        let Some(column) = self.reading_column(palette, window) else {
             return theme::PAGE_MARGIN;
         };
         let outline = if self.outline_shown() {
@@ -2152,7 +2152,8 @@ impl Render for Smep {
             }
         };
         let palette = self.preview_theme().resolve(cx.theme());
-        let style = palette.text_view_style(cx.theme().font_size);
+        let text_size = cx.theme().font_size;
+        let style = palette.text_view_style(palette.body_size(text_size));
         let tab = self.tab();
         let base = tab.document_dir();
         let editing = self.editing;
@@ -2170,7 +2171,7 @@ impl Render for Smep {
         let margin = if editing {
             px(24.)
         } else {
-            self.reading_margin(window)
+            self.reading_margin(&palette, window)
         };
         let body = match hint {
             Some(hint) => div().px(margin).child(hint).into_any_element(),
@@ -2183,17 +2184,11 @@ impl Render for Smep {
                 .into_any_element(),
         };
         let preview_list = tab.preview.read(cx).list_state().clone();
-        let preview = div()
+        let preview = palette
+            .page(div(), text_size)
             .id("preview")
             .size_full()
             .overflow_hidden()
-            .bg(palette.background)
-            .text_color(palette.foreground)
-            .when_some(palette.font_family(), |this, family| {
-                this.font_family(family)
-            })
-            // The text set loose: the blog's leading.
-            .line_height(relative(theme::READING_LEADING))
             .py_4()
             .on_mouse_down(
                 MouseButton::Right,
@@ -2266,7 +2261,7 @@ impl Render for Smep {
             match self.layout() {
                 ViewMode::Source => editor.into_any_element(),
                 ViewMode::Rendered => {
-                    let measure = self.reading_column(window);
+                    let measure = self.reading_column(&palette, window);
                     rendered_view.update(cx, |rendered, cx| {
                         rendered.set_palette(palette, cx);
                         rendered.set_base(base.clone(), cx);
@@ -2894,11 +2889,13 @@ mod tests {
             cx.update(|window, _| (window.viewport_size().width, window.rem_size()));
         let list = cx.read(|cx| smep.read(cx).reading_list(cx));
         let bounds = list.viewport_bounds();
-        // The default column, centred in the pane right of the outline; the
-        // paper either side is the list's own margin, so its scrollbar is at
-        // the pane's right edge.
+        // The default column, Book's medium measure (38 ems of its 18 px
+        // body at 16), centred in the pane right of the outline; the paper
+        // either side is the list's own margin, so its scrollbar is at the
+        // pane's right edge.
         assert_eq!(cx.read(|cx| smep.read(cx).text_width()), TextWidth::Medium);
-        let column = rem * 56.;
+        let book = rem * crate::theme::BOOK_SCALE;
+        let column = book * 38.;
         assert!(
             window > column + super::OUTLINE_WIDTH,
             "a wide window: {window:?}"
@@ -2943,9 +2940,22 @@ mod tests {
         });
         draw(cx);
         let bounds = list.viewport_bounds();
-        assert!((bounds.size.width - rem * 44.).abs() < px(2.), "{bounds:?}");
+        assert!(
+            (bounds.size.width - book * 32.).abs() < px(2.),
+            "{bounds:?}"
+        );
         let left = bounds.left() - super::OUTLINE_STRIP;
         assert!((left - (window - bounds.right())).abs() < px(2.));
+
+        // Paper, a Blog theme, keeps its measure in rems: 44 for narrow.
+        cx.update(|_, cx| {
+            smep.update(cx, |this, cx| {
+                this.set_preview_theme(crate::theme::PreviewTheme::Paper, cx)
+            })
+        });
+        draw(cx);
+        let bounds = list.viewport_bounds();
+        assert!((bounds.size.width - rem * 44.).abs() < px(2.), "{bounds:?}");
     }
     #[gpui_kit::test]
     fn a_click_beside_a_blocks_text_edits_that_block(cx: &mut TestAppContext) {
@@ -3055,12 +3065,12 @@ mod tests {
             "the theme menu opens over the document"
         );
         draw(cx);
-        // As on the split preview: the first `down` is System, the second Paper.
+        // As on the split preview: the first `down` is System, the second Book.
         cx.simulate_keystrokes("down down enter");
         cx.run_until_parked();
         assert_eq!(
             cx.read(|cx| smep.read(cx).preview_theme()),
-            PreviewTheme::Paper
+            PreviewTheme::Book
         );
         assert!(!menu_open(&smep, cx));
 
@@ -3367,6 +3377,11 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
         let text = crate::convert::from_bytes(&pdf, crate::convert::Format::Pdf).unwrap();
         assert!(text.contains("Report") && text.contains("Body"), "{text:?}");
+        // Set in Book's serif, which smep hands Typst itself.
+        assert!(
+            pdf.windows(b"Newsreader".len()).any(|w| w == b"Newsreader"),
+            "the PDF carries Newsreader"
+        );
 
         cx.update(|window, cx| {
             smep.update(cx, |this, cx| this.export_html(&ExportHtml, window, cx))
@@ -3381,8 +3396,8 @@ mod tests {
         assert!(html.contains("<title>Report</title>"));
         assert!(html.contains("<em>text</em>"));
         // The page wears the preview's look (the theme that follows the
-        // application is Paper, light or dark).
-        assert!(html.contains("<style>\n/* smep: the Paper"), "{html}");
+        // application is Book, light or dark).
+        assert!(html.contains("<style>\n/* smep: the Book"), "{html}");
         assert!(!dirty(&smep, cx), "exporting is not saving");
     }
 
@@ -4240,8 +4255,9 @@ mod tests {
         );
         draw(cx);
 
-        // First `down` selects System (the current one), the second Paper.
-        cx.simulate_keystrokes("down down enter");
+        // First `down` selects System (the current one), then Book, Book
+        // Dark, Paper.
+        cx.simulate_keystrokes("down down down down enter");
         cx.run_until_parked();
 
         assert_eq!(

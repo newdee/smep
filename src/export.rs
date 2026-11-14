@@ -29,7 +29,7 @@ use markdown::ParseOptions;
 use markdown::mdast::{AlignKind, Node};
 
 use crate::convert::LineStart;
-use crate::theme::{self, CODE_LEADING, CODE_SCALE, Palette};
+use crate::theme::{self, CODE_LEADING, CODE_SCALE, Design, Palette};
 
 /// The user's own stylesheet for HTML pages, in the config directory.
 pub const STYLESHEET_FILE: &str = "export.css";
@@ -117,8 +117,10 @@ pub fn to_pdf(markdown: &str, base: Option<&Path>, preamble: &str) -> Result<Vec
     use typst_layout::PagedDocument;
 
     let source = to_typst(markdown, preamble);
+    // The system's fonts, and Book's serif, which is smep's own.
     let mut builder = TypstEngine::builder()
         .main_file(source)
+        .fonts(theme::BOOK_FONTS)
         .search_fonts_with(TypstKitFontOptions::default());
     if let Some(base) = base {
         builder = builder.with_file_system_resolver(base);
@@ -175,17 +177,107 @@ const CSS_SERIF: &str =
 const CSS_MONO: &str =
     "ui-monospace,'Cascadia Code','SF Mono',Menlo,Consolas,'Liberation Mono',monospace";
 
-/// The stylesheet of an HTML page in `palette`: the blog's article page in
-/// the palette's colours (the window draws as much of it as its renderer
-/// has hooks for).
+/// Book's CSS font stack: Newsreader where the reader has it, else a
+/// book's serif, CJK in a Song face.
+const CSS_BOOK: &str = "Newsreader,Georgia,'Noto Serif SC','Noto Serif CJK SC','Source Han Serif SC','Songti SC',STSong,SimSun,serif";
+
+/// The stylesheet of an HTML page in `palette`: the palette's design in its
+/// colours (the window draws as much of it as its renderer has hooks for).
 pub fn stylesheet(palette: &Palette) -> String {
-    let hex = theme::hex;
-    let mut soft_accent = hex(palette.accent_soft());
+    match palette.design {
+        Design::Book => book_stylesheet(palette),
+        Design::Blog => blog_stylesheet(palette),
+    }
+}
+
+/// The accent washed out, as CSS writes it: `#rrggbbaa`.
+fn css_accent_soft(palette: &Palette) -> String {
+    let mut soft = theme::hex(palette.accent_soft());
     let _ = write!(
-        soft_accent,
+        soft,
         "{:02x}",
         (palette.accent_soft().a * 255.).round() as u8
     );
+    soft
+}
+
+/// Book as a stylesheet: a book's page, the column a book's measure.
+fn book_stylesheet(palette: &Palette) -> String {
+    let hex = theme::hex;
+    format!(
+        "/* smep: the {name} look. Save a copy as export.css in smep's config directory to make it your own. */\n\
+:root{{color-scheme:{scheme};--paper:{paper};--ink:{ink};--ink-soft:{soft};--ink-faint:{faint};--line:{line};--accent:{accent};--accent-soft:{soft_accent};--code-bg:{code_bg};--code-surface:{surface};--font-body:{CSS_BOOK};--font-mono:{CSS_MONO}}}\n\
+body{{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:{body}rem;line-height:{leading};overflow-wrap:break-word;text-wrap:pretty;font-kerning:normal;-webkit-font-smoothing:antialiased}}\n\
+main{{max-width:{measure}em;margin:0 auto;padding:3.5rem 1.5rem 4rem}}\n\
+main>:first-child{{margin-top:0}}\n\
+h1,h2,h3,h4,h5,h6{{line-height:1.3;font-weight:600;overflow-wrap:anywhere}}\n\
+h1{{font-size:{h1}em;letter-spacing:-.01em;margin:1.6em 0 .7em}}\n\
+h2{{font-size:{h2}em;margin:1.7em 0 .55em}}\n\
+h3{{font-size:{h3}em;margin:1.5em 0 .45em}}\n\
+h4{{font-size:{h4}em;margin:1.4em 0 .4em}}\n\
+h5,h6{{font-size:{h5}em;color:var(--ink-soft);margin:1.3em 0 .4em}}\n\
+p{{margin:0 0 1em}}\n\
+a{{color:var(--accent);text-decoration:underline;text-decoration-color:var(--accent-soft);text-underline-offset:.22em;text-decoration-thickness:1px}}\n\
+a:hover{{text-decoration-color:var(--accent)}}\n\
+strong{{font-weight:700}}\n\
+del{{color:var(--ink-faint)}}\n\
+blockquote{{margin:1.4em 0;padding:.1em 0 .1em 1.1em;border-left:2px solid var(--line);color:var(--ink-soft)}}\n\
+blockquote p{{margin:.3em 0}}\n\
+hr{{border:0;border-top:1px solid var(--line);margin:2.4em 0}}\n\
+table{{border-collapse:collapse;display:block;overflow-x:auto;max-width:100%;font-size:.9em;margin:1.3em 0}}\n\
+th{{border:none;border-bottom:1.5px solid var(--ink-faint);padding:.4em 1em;text-align:left;font-weight:600}}\n\
+td{{border:none;border-bottom:1px solid var(--line);padding:.4em 1em}}\n\
+code,kbd,pre{{font-family:var(--font-mono)}}\n\
+code{{font-size:.82em;background:var(--code-bg);border-radius:4px;padding:.1em .38em}}\n\
+kbd{{font-size:.8em;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:.05em .42em}}\n\
+pre{{margin:1.3em 0 1.4em;padding:.9rem 1.1rem;overflow-x:auto;font-size:{code}em;line-height:{code_leading};background:var(--code-surface);border-radius:8px}}\n\
+pre code{{background:none;padding:0;font-size:1em}}\n\
+.code{{margin:1.3em 0 1.4em;border-radius:8px;overflow:hidden;background:var(--code-surface)}}\n\
+.code pre{{margin:0;border-radius:0;padding-top:.3rem}}\n\
+.code-head{{display:flex;justify-content:flex-end;padding:.55rem 1.1rem 0;font-family:var(--font-mono);font-size:.68em;line-height:1.6}}\n\
+.code-lang{{text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}}\n\
+img{{max-width:100%;height:auto;border-radius:6px}}\n\
+ul,ol{{padding-left:1.5em;margin:0 0 1em}}\n\
+li{{margin:.3em 0}}\n\
+li>p{{margin:0}}\n\
+li::marker{{color:var(--ink-faint)}}\n\
+input[type=checkbox]{{accent-color:var(--accent);margin-right:.4em}}\n\
+li:has(>input[type=checkbox]:first-child){{list-style:none;margin-left:-1.4em}}\n\
+.footnotes{{margin-top:3em;border-top:1px solid var(--line);padding-top:1em;font-size:.88em;color:var(--ink-soft)}}\n\
+.footnotes ol{{padding-left:1.4em}}\n\
+.data-footnote-backref{{color:var(--ink-faint);text-decoration:none}}\n\
+sup a{{text-decoration:none}}\n\
+.sr-only{{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}\n\
+::selection{{background:var(--accent-soft)}}\n\
+@media print{{main{{max-width:none;padding:0}}.code,pre,blockquote,tr,img{{break-inside:avoid}}h1,h2,h3,h4{{break-after:avoid}}}}\n",
+        name = palette.name,
+        scheme = if palette.dark { "dark" } else { "light" },
+        paper = hex(palette.background),
+        ink = hex(palette.foreground),
+        soft = hex(palette.muted),
+        faint = hex(palette.faint),
+        line = hex(palette.border),
+        accent = hex(palette.link),
+        soft_accent = css_accent_soft(palette),
+        code_bg = hex(palette.code_background),
+        surface = hex(palette.code_surface),
+        body = theme::BOOK_SCALE,
+        leading = theme::BOOK_LEADING,
+        measure = theme::BOOK_MEASURE[1],
+        h1 = Design::Book.heading_scale(1),
+        h2 = Design::Book.heading_scale(2),
+        h3 = Design::Book.heading_scale(3),
+        h4 = Design::Book.heading_scale(4),
+        h5 = Design::Book.heading_scale(5),
+        code = theme::BOOK_CODE_SCALE,
+        code_leading = CODE_LEADING,
+    )
+}
+
+/// The blog's article page as a stylesheet.
+fn blog_stylesheet(palette: &Palette) -> String {
+    let hex = theme::hex;
+    let soft_accent = css_accent_soft(palette);
     // The code board: a whiteboard in a thick frame on light paper, a
     // hairline frame with the accent along its top on dark.
     let board = if palette.dark {
@@ -261,11 +353,11 @@ sup a{{text-decoration:none}}\n\
         surface = hex(palette.code_surface),
         rail = hex(palette.code_rail),
         frame = hex(palette.code_frame),
-        h1 = theme::heading_scale(1),
-        h2 = theme::heading_scale(2),
-        h3 = theme::heading_scale(3),
-        h4 = theme::heading_scale(4),
-        h5 = theme::heading_scale(5),
+        h1 = Design::Blog.heading_scale(1),
+        h2 = Design::Blog.heading_scale(2),
+        h3 = Design::Blog.heading_scale(3),
+        h4 = Design::Blog.heading_scale(4),
+        h5 = Design::Blog.heading_scale(5),
         gap = theme::HEADING_RULE_GAP,
         leading = CODE_LEADING,
         code = CODE_SCALE,
@@ -320,12 +412,106 @@ fn code_boards(html: &str) -> String {
 /// same design as the stylesheet in `set` and `show` rules. The markup
 /// after it is plain, so replacing the preamble replaces the whole look.
 pub fn preamble(palette: &Palette) -> String {
-    let fonts = |list: &[&str]| {
-        list.iter()
-            .map(|font| format!("{font:?}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    match palette.design {
+        Design::Book => book_preamble(palette),
+        Design::Blog => blog_preamble(palette),
+    }
+}
+
+/// A font list as Typst writes it: `"A", "B"`.
+fn typst_fonts(list: &[&str]) -> String {
+    list.iter()
+        .map(|font| format!("{font:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Book's body faces for a PDF: Newsreader (handed to Typst with the
+/// document, see [`to_pdf`]), then the Song faces for CJK, then any CJK
+/// face. No SimSun: it has no bold, and Typst would not make one.
+const BOOK_FONTS: &[&str] = &[
+    theme::BOOK_FONT,
+    "Noto Serif CJK SC",
+    "Noto Serif SC",
+    "Source Han Serif SC",
+    "Songti SC",
+    "Noto Sans CJK SC",
+    "PingFang SC",
+    "Microsoft YaHei",
+];
+
+/// Book as a Typst preamble: a book's page on A4.
+fn book_preamble(palette: &Palette) -> String {
+    const BODY: f32 = 11.5;
+    format!(
+        "// smep: the {name} look. Save a copy as export.typ in smep's config directory to make it your own.\n\
+#let paper = rgb({paper:?})\n\
+#let ink = rgb({ink:?})\n\
+#let soft = rgb({soft:?})\n\
+#let faint = rgb({faint:?})\n\
+#let accent = rgb({accent:?})\n\
+#let accent-soft = accent.transparentize({transparent}%)\n\
+#let rule = rgb({line:?})\n\
+#let code-bg = rgb({code_bg:?})\n\
+#let code-surface = rgb({surface:?})\n\
+#let mono = ({code_fonts})\n\
+#set page(paper: \"a4\", margin: (x: 2.4cm, y: 2.2cm), numbering: \"1\", fill: paper)\n\
+#set text(font: ({body_fonts}), size: {BODY}pt, fill: ink)\n\
+#set par(justify: true, leading: 1em, spacing: 1.5em)\n\
+#show link: it => underline(stroke: 0.5pt + accent-soft, offset: 2.5pt, text(fill: accent, it))\n\
+#set strong(delta: 300)\n\
+#show raw: set text(font: mono, size: {code_size}pt)\n\
+#show raw.where(block: false): it => box(fill: code-bg, inset: (x: 3pt), outset: (y: 2.5pt), radius: 3pt, it)\n\
+#show raw.where(block: true): it => block(width: 100%, above: 1.3em, below: 1.4em, fill: code-surface, radius: 5.5pt, inset: (x: 1.1em, y: 0.9em), {{\n\
+  set par(justify: false, leading: 0.7em)\n\
+  if it.lang != none {{\n\
+    align(right, text(size: 0.72em, fill: accent, tracking: 0.08em, upper(it.lang)))\n\
+    v(0.1em)\n\
+  }}\n\
+  it\n\
+}})\n\
+#show heading: set text(weight: \"semibold\")\n\
+#show heading: set par(leading: 0.5em)\n\
+#show heading: set block(above: 1.7em, below: 0.75em)\n\
+#show heading.where(level: 1): set text(size: {h1}em)\n\
+#show heading.where(level: 2): set text(size: {h2}em)\n\
+#show heading.where(level: 3): set text(size: {h3}em)\n\
+#show heading.where(level: 4): set text(size: {h4}em)\n\
+#show heading.where(level: 5): set text(size: {h5}em, fill: soft)\n\
+#show heading.where(level: 6): set text(size: {h5}em, fill: soft)\n\
+#show quote.where(block: true): it => block(width: 100%, above: 1.4em, below: 1.4em, stroke: (left: 1.5pt + rule), inset: (left: 1em, y: 0.2em), text(fill: soft, it.body))\n\
+#set list(marker: text(fill: faint)[•])\n\
+#set table(stroke: (x, y) => if y == 0 {{ (bottom: 1pt + faint) }} else {{ (bottom: 0.5pt + rule) }}, inset: (x: 0.7em, y: 0.45em))\n\
+#show table: set text(size: 0.9em)\n\
+#show table: set par(justify: false)\n\
+#show table.cell.where(y: 0): set text(weight: \"semibold\")\n\
+#show image: it => box(radius: 4pt, clip: true, it)\n\
+#set line(stroke: 0.5pt + rule)\n\
+#set footnote.entry(separator: line(length: 30%, stroke: 0.5pt + rule))\n",
+        name = palette.name,
+        paper = theme::hex(palette.background),
+        ink = theme::hex(palette.foreground),
+        soft = theme::hex(palette.muted),
+        faint = theme::hex(palette.faint),
+        accent = theme::hex(palette.link),
+        transparent = ((1. - palette.accent_soft().a) * 100.).round(),
+        line = theme::hex(palette.border),
+        code_bg = theme::hex(palette.code_background),
+        surface = theme::hex(palette.code_surface),
+        code_fonts = typst_fonts(CODE_FONTS),
+        body_fonts = typst_fonts(BOOK_FONTS),
+        code_size = (theme::BOOK_CODE_SCALE * BODY * 100.).round() / 100.,
+        h1 = Design::Book.heading_scale(1),
+        h2 = Design::Book.heading_scale(2),
+        h3 = Design::Book.heading_scale(3),
+        h4 = Design::Book.heading_scale(4),
+        h5 = Design::Book.heading_scale(5),
+    )
+}
+
+/// The blog's article page as a Typst preamble.
+fn blog_preamble(palette: &Palette) -> String {
+    let fonts = typst_fonts;
     // Lengths written in CSS pixels at a 16 px body, in points at 11.
     let pt = |pixels: f32| (pixels * 11. / 16. * 100.).round() / 100.;
     // The code board's frame, and the band's rule (see `stylesheet`).
@@ -421,11 +607,11 @@ pub fn preamble(palette: &Palette) -> String {
         // Typst sets raw text at 0.8 of its surroundings on its own, so the
         // size is given outright: the body's 11 pt scaled.
         code_size = (CODE_SCALE * 11. * 100.).round() / 100.,
-        h1 = theme::heading_scale(1),
-        h2 = theme::heading_scale(2),
-        h3 = theme::heading_scale(3),
-        h4 = theme::heading_scale(4),
-        h5 = theme::heading_scale(5),
+        h1 = Design::Blog.heading_scale(1),
+        h2 = Design::Blog.heading_scale(2),
+        h3 = Design::Blog.heading_scale(3),
+        h4 = Design::Blog.heading_scale(4),
+        h5 = Design::Blog.heading_scale(5),
         gap = theme::HEADING_RULE_GAP,
     )
 }
@@ -673,34 +859,36 @@ impl Writer {
         match node {
             Node::Text(t) => out.push_str(&escape(&t.value)),
             Node::Emphasis(e) => {
-                let _ = write!(out, "#emph[{}]", self.inline(&e.children));
+                call(out, format_args!("emph[{}]", self.inline(&e.children)));
             }
             Node::Strong(s) => {
-                let _ = write!(out, "#strong[{}]", self.inline(&s.children));
+                call(out, format_args!("strong[{}]", self.inline(&s.children)));
             }
             Node::Delete(d) => {
-                let _ = write!(out, "#strike[{}]", self.inline(&d.children));
+                call(out, format_args!("strike[{}]", self.inline(&d.children)));
             }
             Node::InlineCode(c) => {
-                let _ = write!(out, "#raw({})", typst_string(&c.value));
+                call(out, format_args!("raw({})", typst_string(&c.value)));
             }
             Node::InlineMath(m) => {
-                let _ = write!(out, "#raw({})", typst_string(&m.value));
+                call(out, format_args!("raw({})", typst_string(&m.value)));
             }
             Node::Break(_) => out.push_str(" \\\n"),
             Node::Link(link) => {
-                let _ = write!(
+                call(
                     out,
-                    "#link({})[{}]",
-                    typst_string(&link.url),
-                    self.inline(&link.children)
+                    format_args!(
+                        "link({})[{}]",
+                        typst_string(&link.url),
+                        self.inline(&link.children)
+                    ),
                 );
             }
             Node::LinkReference(link) => {
                 let text = self.inline(&link.children);
                 match self.definition(&link.identifier) {
                     Some(url) => {
-                        let _ = write!(out, "#link({})[{text}]", typst_string(&url));
+                        call(out, format_args!("link({})[{text}]", typst_string(&url)));
                     }
                     None => out.push_str(&text),
                 }
@@ -726,7 +914,7 @@ impl Writer {
                             .join(" ")
                     })
                     .unwrap_or_default();
-                let _ = write!(out, "#footnote[{content}]");
+                call(out, format_args!("footnote[{content}]"));
             }
             Node::Html(html) => out.push_str(&escape(&strip_tags(&html.value))),
             other => {
@@ -748,9 +936,12 @@ impl Writer {
             && !url.contains("..")
             && !url.get(1..2).is_some_and(|c| c == ":");
         if local && !url.is_empty() {
-            let _ = write!(out, "#image({}, width: 100%)", typst_string(url));
+            call(
+                out,
+                format_args!("image({}, width: 100%)", typst_string(url)),
+            );
         } else if !alt.is_empty() {
-            let _ = write!(out, "#emph[{}]", escape(alt));
+            call(out, format_args!("emph[{}]", escape(alt)));
         }
     }
 
@@ -766,6 +957,14 @@ impl Writer {
 /// Text as Typst markup: every character that would otherwise be read as
 /// syntax gets a backslash, and so does a line start that Typst reads as a
 /// heading (`=`), a list (`-`, `+`) or a numbered item (`1.`).
+/// A call embedded in markup (`#name...`), closed with a `;` of its own.
+/// Typst reads on past a call into what follows it (`.x` is a field, `(`
+/// and `[` more arguments) and swallows a `;` there; with the call closed,
+/// the text after it stays text: `*a*; b` is `#emph[a];; b`.
+fn call(out: &mut String, call: std::fmt::Arguments) {
+    let _ = write!(out, "#{call};");
+}
+
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut line = LineStart::default();
@@ -861,7 +1060,7 @@ mod tests {
     fn headings_paragraphs_and_inline_marks() {
         assert_eq!(
             body("# Title\n\nSome **bold**, *it*, ~~gone~~, `code` and [a link](https://x.y).\n"),
-            "= Title\n\nSome #strong[bold], #emph[it], #strike[gone], #raw(\"code\") and #link(\"https://x.y\")[a link].\n"
+            "= Title\n\nSome #strong[bold];, #emph[it];, #strike[gone];, #raw(\"code\"); and #link(\"https://x.y\")[a link];.\n"
         );
     }
 
@@ -869,7 +1068,7 @@ mod tests {
     fn syntax_characters_in_text_are_escaped() {
         assert_eq!(
             body("Price: $5 #1 a_b *c* @d [e] // f\n"),
-            "Price: \\$5 \\#1 a\\_b #emph[c] \\@d \\[e\\] \\/\\/ f\n"
+            "Price: \\$5 \\#1 a\\_b #emph[c]; \\@d \\[e\\] \\/\\/ f\n"
         );
         assert_eq!(typst_string("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
     }
@@ -982,6 +1181,53 @@ mod tests {
         );
     }
 
+    /// Book on a page and in a PDF: the window's values, none of the
+    /// blog's marks.
+    #[test]
+    fn book_exports_as_a_books_page() {
+        let book = PreviewTheme::Book.palette().unwrap();
+        let css = stylesheet(&book);
+        for part in [
+            "/* smep: the Book look.",
+            "--font-body:Newsreader,Georgia,'Noto Serif SC',",
+            "font-size:1.125rem;line-height:1.78;",
+            "main{max-width:38em;",
+            "h1{font-size:1.75em;",
+            "h2{font-size:1.32em;",
+            "h1,h2,h3,h4,h5,h6{line-height:1.3;font-weight:600;",
+            "pre{margin:1.3em 0 1.4em;padding:.9rem 1.1rem;overflow-x:auto;font-size:0.8em;",
+            ".code{margin:1.3em 0 1.4em;border-radius:8px;overflow:hidden;background:var(--code-surface)}",
+            "blockquote{margin:1.4em 0;padding:.1em 0 .1em 1.1em;border-left:2px solid var(--line);",
+        ] {
+            assert!(css.contains(part), "{part:?} in\n{css}");
+        }
+        for blog in ["gradient", "::before", "border:5px", "box-shadow", "「"] {
+            assert!(!css.contains(blog), "{blog:?} is the blog's");
+        }
+        let dark = stylesheet(&PreviewTheme::BookDark.palette().unwrap());
+        assert!(dark.contains("color-scheme:dark;--paper:#1e1c19;--ink:#e3ddd2"));
+
+        let typst = preamble(&book);
+        for part in [
+            "// smep: the Book look.",
+            "#set text(font: (\"Newsreader\", \"Noto Serif CJK SC\",",
+            "size: 11.5pt, fill: ink)",
+            "#set par(justify: true, leading: 1em, spacing: 1.5em)",
+            "#show raw: set text(font: mono, size: 9.2pt)",
+            "#show heading: set text(weight: \"semibold\")",
+            "#show heading.where(level: 1): set text(size: 1.75em)",
+        ] {
+            assert!(typst.contains(part), "{part:?} in\n{typst}");
+        }
+        assert!(!typst.contains("SimSun"), "no bold, so not in a PDF");
+        for blog in ["gradient", "「", "code-frame"] {
+            assert!(!typst.contains(blog), "{blog:?} is the blog's");
+        }
+        // A PDF prints in the light page of the family.
+        assert_eq!(PreviewTheme::BookDark.print_palette(), book);
+        assert_eq!(PreviewTheme::System.print_palette(), book);
+    }
+
     #[test]
     fn the_stylesheet_is_the_palettes_design() {
         let css = stylesheet(&paper());
@@ -1087,11 +1333,11 @@ mod tests {
     fn references_footnotes_and_images() {
         assert_eq!(
             body("See [docs][d] and note[^1].\n\n[d]: https://d.io\n[^1]: The note.\n"),
-            "See #link(\"https://d.io\")[docs] and note#footnote[The note.].\n"
+            "See #link(\"https://d.io\")[docs]; and note#footnote[The note.];.\n"
         );
         assert_eq!(
             body("![local](pic.png) ![remote](https://x/y.png) ![up](../a.png)\n"),
-            "#image(\"pic.png\", width: 100%) #emph[remote] #emph[up]\n"
+            "#image(\"pic.png\", width: 100%); #emph[remote]; #emph[up];\n"
         );
     }
 
@@ -1173,16 +1419,25 @@ mod tests {
     fn the_same_document_exports_to_the_same_bytes() {
         // No timestamp or random id in the PDF, so an export can be
         // compared with the last one.
-        let markdown = "# Same\n\nText, a [link](https://x.y) and a list:\n\n- one\n- two\n";
-        let first = pdf(markdown, None).unwrap();
-        let second = pdf(markdown, None).unwrap();
-        assert!(first == second, "{} vs {} bytes", first.len(), second.len());
-        // For comparing across processes (`--nocapture`): the font list is
-        // read from the system on each run.
-        let hash = first.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
-        eprintln!("pdf fnv1a {hash:016x}, {} bytes", first.len());
+        let markdown = "# Same\n\nText, a [link](https://x.y), 中文 and a list:\n\n- one\n- two\n";
+        // Both designs: Book's also carries the fonts smep hands Typst.
+        for theme in [PreviewTheme::Paper, PreviewTheme::Book] {
+            let preamble = preamble(&theme.palette().unwrap());
+            let first = to_pdf(markdown, None, &preamble).unwrap();
+            let second = to_pdf(markdown, None, &preamble).unwrap();
+            assert!(
+                first == second,
+                "{theme:?}: {} vs {} bytes",
+                first.len(),
+                second.len()
+            );
+            // For comparing across processes (`--nocapture`): the font list
+            // is read from the system on each run.
+            let hash = first.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            });
+            eprintln!("{theme:?} pdf fnv1a {hash:016x}, {} bytes", first.len());
+        }
         let css = stylesheet(&paper());
         assert_eq!(
             to_html(markdown, "Same", &css),
@@ -1264,5 +1519,28 @@ mod tests {
         let err = pdf("![x](missing.png)\n", Some(&dir)).unwrap_err();
         assert!(err.to_string().contains("could not typeset"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Typst reads on past a call into the text right after it: a `;` was
+    /// swallowed, `.x` taken as a field, `(` and `[` as more arguments.
+    #[cfg(feature = "pdf-import")]
+    #[test]
+    fn text_right_after_a_mark_stays_text() {
+        let markdown =
+            "*a*; b **c**.d `e`(f) ~~g~~[h] [l](https://x.y); i note[^1]; j\n\n[^1]: n\n";
+        assert_eq!(
+            body(markdown),
+            "#emph[a];; b #strong[c];.d #raw(\"e\");(f) #strike[g];\\[h\\] #link(\"https://x.y\")[l];; i note#footnote[n];; j\n"
+        );
+        let text = crate::convert::from_bytes(
+            &pdf(markdown, None).expect("it typesets"),
+            crate::convert::Format::Pdf,
+        )
+        .unwrap();
+        let text: String = text.split_whitespace().collect();
+        // (Read back as Markdown: the marks come back as `*a*`, `<s>g</s>`.)
+        for kept in [";b", ".d", "(f)", "[h]", ";i", ";j"] {
+            assert!(text.contains(kept), "{kept:?} in {text:?}");
+        }
     }
 }

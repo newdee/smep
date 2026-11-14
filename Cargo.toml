@@ -14,6 +14,7 @@ include = [
     "src/**",
     "tests/**",
     "assets/themes/*",
+    "assets/fonts/*",
     "assets/icon/smep.ico",
     "assets/icon/smep-256.png",
     "build.rs",

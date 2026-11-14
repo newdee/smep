@@ -18,7 +18,7 @@ use crate::app::PreviewFormat;
 use crate::highlight;
 use crate::insert;
 use crate::io::{self, ImageLocation};
-use crate::theme::{self, Palette};
+use crate::theme::{Design, Palette};
 
 /// How a rendering finds the document's images: a relative path is a file
 /// next to the document, in `base` (see [`io::locate_image`]).
@@ -54,12 +54,17 @@ pub fn code_block_actions(
             .items_center()
             .text_xs()
             .children(lang.map(|lang| {
-                div()
+                // A tab of the accent on the blog's board; in Book only the
+                // word, spaced out.
+                let tab = div()
                     .px(px(7.))
                     .rounded(px(4.))
-                    .bg(palette.accent_soft())
                     .text_color(palette.link)
-                    .child(SharedString::from(lang.to_uppercase()))
+                    .child(SharedString::from(lang.to_uppercase()));
+                match palette.design {
+                    Design::Book => tab.px_0(),
+                    Design::Blog => tab.bg(palette.accent_soft()),
+                }
             }))
             .child(
                 div()
@@ -500,8 +505,6 @@ impl Render for RenderedView {
         let text = self.blocks_text.clone();
         let active = self.active_range();
         let palette = self.palette;
-        let background = palette.background;
-        let foreground = palette.foreground;
         let muted = palette.muted;
 
         // The editor takes the place of the blocks its text parses into,
@@ -544,20 +547,15 @@ impl Render for RenderedView {
             );
         }
 
-        v_flex()
+        // Set as when reading; each block keeps its text in the page's
+        // column while the whole row stays the block's to click.
+        palette
+            .page(v_flex(), cx.theme().font_size)
             .id("rendered")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .track_focus(&self.focus_handle)
-            .bg(background)
-            .text_color(foreground)
-            .when_some(palette.font_family(), |this, family| {
-                this.font_family(family)
-            })
-            // Set loose, as when reading; each block keeps its text in the
-            // page's column while the whole row stays the block's to click.
-            .line_height(relative(theme::READING_LEADING))
             .px_6()
             .py_4()
             .gap_3()
@@ -599,7 +597,7 @@ impl RenderedView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let source: SharedString = text[range.clone()].to_string().into();
-        let style = palette.text_view_style(cx.theme().font_size);
+        let style = palette.text_view_style(palette.body_size(cx.theme().font_size));
         div()
             .id(("block", ix))
             .w_full()

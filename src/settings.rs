@@ -33,16 +33,18 @@ impl ViewMode {
     }
 }
 
-/// How wide the column of text runs in the page being read.
+/// How wide the column of text runs in the page being read. What each
+/// width measures depends on the theme's design (`Palette::measure`): in
+/// rems in Blog ([`Self::rems`]), in ems of the larger body in Book.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TextWidth {
-    /// 44 rem: the blog's column, a printed page's measure.
+    /// Blog: 44 rem, the blog's column. Book: 32 em.
     Narrow,
-    /// 56 rem.
+    /// Blog: 56 rem. Book: 38 em, a book's measure.
     #[default]
     Medium,
-    /// 72 rem.
+    /// Blog: 72 rem. Book: 50 em.
     Wide,
     /// The whole pane, less its margins.
     Full,
@@ -60,7 +62,8 @@ impl TextWidth {
         }
     }
 
-    /// The column's width in rems, or None for the whole pane.
+    /// The column's width in rems in the Blog design, or None for the
+    /// whole pane.
     pub fn rems(self) -> Option<f32> {
         match self {
             Self::Narrow => Some(44.),
