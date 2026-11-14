@@ -14,7 +14,9 @@ place, block by block.
 
 ## Status
 
-`0.1.15` is the sixteenth release: the document is set as a book sets
+`0.1.16` is the seventeenth release: the outline folds a section by the
+triangle before it and lists headings down to a level you pick (1, 2, 3
+or All in its head). 0.1.15 set the document as a book sets
 it, in the new Book theme and its dark twin, the default: Newsreader
 (built in) with CJK text in the system's Song face, a size up, a
 reader's leading, a book's measure, quiet headings and code on a flat

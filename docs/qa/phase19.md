@@ -21,7 +21,7 @@ Work was done in a second git worktree while the 0.1.15 release chain ran from t
 | C | boundaries: a hand-edited settings file | — | `outline_depth = 0` listed nothing (only the setter clamped) → one clamping accessor for every read; `a_hand_edited_depth_is_kept_in_range` (0 → 1, 9 → 6, 2 → 2); without the clamp it fails |
 | 1 (clean) | static: fmt 0, clippy 0 (default and slim); docs against code | 135 + 5, slim 125 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times (the clicks go by drawn bounds) | 135 + 5 each time | none |
-| 3 (clean) | the other platforms: CI | see below | |
+| 3 (clean) | the other platforms: CI run 43564932640 for `5bb4a6f`: ubuntu 5 m 17 s (136 + 4), macos 6 m 47 s (134 + 4), windows 8 m 45 s (135 + 5), 0 failed | clean | none |
 
 Degenerate outlines are in `outline.rs`'s tests: no headings, a document starting below h1, skipped levels, a fold on a heading that holds nothing, two sections of the same level and title, a heading above every listed one.
 
