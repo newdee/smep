@@ -14,10 +14,14 @@ place, block by block.
 
 ## Status
 
-`0.1.14` is the fifteenth release: reading sets the text loose (the
-blog's 1.85 leading) in a centred column whose width you choose (View,
-Text Width: narrow, medium, wide or full), with the scrollbar at the
-window's edge, and the outline shows from the start and folds away to a
+`0.1.15` is the sixteenth release: the document is set as a book sets
+it, in the new Book theme and its dark twin, the default: Newsreader
+(built in) with CJK text in the system's Song face, a size up, a
+reader's leading, a book's measure, quiet headings and code on a flat
+tint, on screen, in the exported page and in the PDF; and a PDF no
+longer loses a `;` (or breaks on a `(`) right after emphasis, a link or
+code. 0.1.14 let you choose the column's width (View, Text Width) with
+the scrollbar at the window's edge, and folded the outline away to a
 strip. 0.1.12
 put documents in tabs (a file opened from the file manager, or `smep FILE`, while smep runs lands in a
 tab of the open window), an outline of the headings sits beside the

@@ -37,7 +37,7 @@ The PDF of the sample lost a `;`: `*disappears*;` came out "disappears the". Typ
 | E | reproducibility | — | the same-bytes test checked Paper's PDF only; Book's carries the bundled fonts → the test covers both designs (and CJK text); 3 processes: Paper `9b681d4e3ce5dd69`, Book `fe7ac582daf4b765` |
 | 1 (clean) | reproducibility: fmt 0, clippy 0, the suite 3 times | 129 + 5 each time, both hashes the same 3 times | none |
 | 2 (clean) | degenerate inputs: the 24 degenerate documents under Book and Book Dark, and 6 "text right after a mark" inputs, typeset (a temporary probe, removed) | 54 / 54 typeset | none |
-| 3 (clean) | the other platforms: CI | see below | |
+| 3 (clean) | the other platforms: CI run 43558378183 for `4d8afff`: ubuntu 14 m 30 s (130 + 4), macos 22 m 50 s (128 + 4), windows 32 m 26 s (129 + 5), 0 failed | clean | none |
 
 ## Fonts against the real text system
 
