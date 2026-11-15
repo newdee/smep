@@ -25,7 +25,7 @@ The request: "给smep加上vim模式把，做完了之后再发版".
 | G | static again: `cargo fmt --check` | — | 28 lines unformatted (the last test edits) → formatted |
 | 1 (clean) | static: fmt 0 lines; clippy `-D warnings` 0 (default and `--no-default-features`); README's 22 claims against the code; every `Op` and `Key` variant built somewhere (no dead-code warning) | 165 + 5, slim 155 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times (the fuzz has a fixed seed, so the same 2000 sequences each time) | 165 + 5 each time, 0 failed | none |
-| 3 | the other platforms: CI | pending | |
+| 3 (clean) | the other platforms: CI run 43738154273 for `5a92a00`: ubuntu 5 m 19 s (166 + 4), macos 5 m 21 s (164 + 4), windows 7 m 50 s (165 + 5), 0 failed | clean | none |
 
 Engine tests (`vim.rs`): 26, among them the degenerate sweep (11 texts × 37 commands × every start position), the fuzz, the 2 MB timing. App tests: 4 (`vim_mode_*`), through `simulate_keystrokes`, so through the interceptor and the editor.
 

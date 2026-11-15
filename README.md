@@ -14,9 +14,11 @@ place, block by block.
 
 ## Status
 
-`0.1.16` is the seventeenth release: the outline folds a section by the
-triangle before it and lists headings down to a level you pick (1, 2, 3
-or All in its head). 0.1.15 set the document as a book sets
+`0.1.17` is the eighteenth release: Vim mode (Edit, Vim Mode) gives the
+editor and the rendered view's block editors Normal, Insert and Visual
+modes, with counts, operators, text objects, `.` and a block cursor. 0.1.16
+let the outline fold a section by the triangle before it and list headings
+down to a level you pick (1, 2, 3 or All in its head). 0.1.15 set the document as a book sets
 it, in the new Book theme and its dark twin, the default: Newsreader
 (built in) with CJK text in the system's Song face, a size up, a
 reader's leading, a book's measure, quiet headings and code on a flat
