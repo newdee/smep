@@ -98,6 +98,11 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
   All in the outline's head list the headings down to that level. Fold it
   away (its ‹, the Outline button or Ctrl+Shift+L) to a strip along the
   edge, and unfold it from there.
+- Vim mode (Edit, Vim Mode; off until you turn it on, then remembered):
+  the editor and the block being edited in the rendered view take Vim's
+  keys, with Normal, Insert, Visual and Visual Line modes, the mode in the
+  corner of the pane and a block cursor in Normal mode. See
+  [Vim mode](#vim-mode) for the keys.
 - Open, save, save as; an unsaved-changes prompt before a tab or the
   window closes, for each document with changes.
 - Other documents become Markdown: drop a PDF, Word (.docx) or text file on
@@ -160,6 +165,39 @@ preview are built on gpui-kit and gpui-pre, which are themselves young.
 | Find in editor | Ctrl+F | Cmd+F |
 | Find and replace | Ctrl+H | Cmd+Shift+F |
 | Document start / end | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |
+
+### Vim mode
+
+Turn it on under Edit, Vim Mode. Writing then starts in Normal mode. The
+window's shortcuts (Ctrl+S, Ctrl+Tab, Ctrl+E, …) work in every mode. In
+Normal and Visual mode the arrows, Home and End are `h` `j` `k` `l`, `0`
+and `$`; Shift+arrows select as usual, and Page Up / Down scroll.
+
+| Keys | What they do |
+|---|---|
+| `i` `a` `I` `A` `o` `O` | Insert mode (before, after, line start, line end, new line below, above) |
+| Escape (or Ctrl+[) | Back to Normal mode; in Normal mode it does what it does without Vim (it finishes a block edit) |
+| `h` `j` `k` `l`, `w` `b` `e`, `W` `B` `E`, `0` `^` `$`, `gg` `G`, `{` `}`, `%` | Move (with a count: `3w`, `5j`, `12G`) |
+| `f` `F` `t` `T` + a character, `;` `,` | Move to a character on the line, and again |
+| `d` `c` `y` + a move or an object | Delete, change, yank (copy): `dw`, `c$`, `y}`, `d3j` |
+| `dd` `cc` `yy`, `D` `C` `Y`, `x` `X` `s` `S` | Lines and characters |
+| `iw` `aw`, `i"` `a"`, `i(` `a(` (`ib`), `i[`, `i{` (`iB`), `i<` | Objects, after an operator or in Visual mode: `ciw`, `da(` |
+| `p` `P` | Put after / before (whole lines below / above) |
+| `r` + a character, `J`, `~` | Replace, join lines, switch case |
+| `u`, Ctrl+R | Undo, redo |
+| `.` | Repeat the last change made from Normal mode (with what was typed in Insert mode); Visual-mode changes are not repeated |
+| `v`, `V` | Visual, Visual Line; then a move, `o`, `d` `c` `y` `p` `r` `J` `~` `u` `U` |
+| `/` | Find (the source editor's find bar) |
+| Ctrl+D, Ctrl+U | Page down, page up |
+
+Text selected with the mouse (or Ctrl+A) starts Visual mode. Yanks go to
+smep's own register, not the system clipboard (Ctrl+C / Ctrl+V still
+reach that). Not there: `:` commands, `/` with `n` / `N`, marks, macros,
+named registers, `>` / `<`.
+
+Note: Normal mode reads keys, not text. With a CJK input method in its
+native mode, the keys reach the input method first and its text lands in
+the document, so switch it to English (or Latin input) in Normal mode.
 
 ## Install
 

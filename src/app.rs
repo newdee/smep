@@ -2,6 +2,7 @@
 //! its live preview, with the outline of the one on screen beside it.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,8 +16,8 @@ use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
-    Copy, Cut, Editor, EditorState, InputEvent, Paste, Position, Redo, Replace, RopeExt as _,
-    Search, SelectAll, TextareaState, Undo,
+    Copy, Cut, Editor, EditorState, InputEvent, MovePageDown, MovePageUp, Paste, Position, Redo,
+    Replace, RopeExt as _, Search, SelectAll, TextareaState, Undo,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -37,12 +38,13 @@ use crate::io::{self, Document};
 use crate::keymap::{
     self, CloseTab, ExportHtml, ExportPdf, Import, MakeDefault, NewTab, NextTab, Open, PreviousTab,
     Quit, Save, SaveAs, TextFull, TextMedium, TextNarrow, TextWide, ToggleEditing,
-    ToggleFullscreen, ToggleMenuBar, ToggleOutline, ViewRendered, ViewSource, ViewSplit,
+    ToggleFullscreen, ToggleMenuBar, ToggleOutline, ToggleVim, ViewRendered, ViewSource, ViewSplit,
 };
 use crate::outline::{self, SectionKey};
 use crate::rendered::{self, RenderedEvent, RenderedView};
 use crate::settings::{Settings, TextWidth, ViewMode};
 use crate::theme::{self, PreviewTheme};
+use crate::vim::{self, Vim};
 
 /// How long typing has to pause before the preview re-parses.
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(80);
@@ -96,6 +98,56 @@ impl ActiveEditor {
         }
     }
 
+    fn entity_id(&self) -> EntityId {
+        match self {
+            Self::Source(editor) => editor.entity_id(),
+            Self::Block(editor) => editor.entity_id(),
+        }
+    }
+
+    /// Do what Vim mode asked for, in order.
+    fn apply_vim(&self, ops: &[vim::Op], window: &mut Window, cx: &mut App) {
+        let focus = self.focus_handle(cx);
+        for op in ops {
+            match op {
+                vim::Op::Undo | vim::Op::Redo => {
+                    if *op == vim::Op::Undo {
+                        focus.dispatch_action(&Undo, window, cx);
+                    } else {
+                        focus.dispatch_action(&Redo, window, cx);
+                    }
+                    // Undo may leave the restored text selected; Normal mode
+                    // wants a cursor, at its start.
+                    self.collapse_selection(cx);
+                }
+                vim::Op::PageDown => focus.dispatch_action(&MovePageDown, window, cx),
+                vim::Op::PageUp => focus.dispatch_action(&MovePageUp, window, cx),
+                vim::Op::Find => focus.dispatch_action(&Search, window, cx),
+                vim::Op::Edit { .. } | vim::Op::Cursor(_) | vim::Op::Select(_) => {
+                    self.edit_vim(op, window, cx);
+                }
+            }
+        }
+    }
+
+    fn edit_vim(&self, op: &vim::Op, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Source(editor) => {
+                editor.update(cx, |state, cx| apply_vim_op(state, op, window, cx));
+            }
+            Self::Block(editor) => {
+                editor.update(cx, |state, cx| apply_vim_op(state, op, window, cx));
+            }
+        }
+    }
+
+    fn collapse_selection(&self, cx: &mut App) {
+        match self {
+            Self::Source(editor) => editor.update(cx, collapse_selection),
+            Self::Block(editor) => editor.update(cx, collapse_selection),
+        }
+    }
+
     /// Window-space bounds of the cursor's line, once the input has laid out.
     fn cursor_line_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
         self.read(cx, |state| state.cursor_line_bounds())
@@ -118,10 +170,44 @@ impl ActiveEditor {
     }
 }
 
+/// Make one of Vim mode's edits or moves.
+fn apply_vim_op<M: MultiLineMode>(
+    state: &mut InputBaseState<M>,
+    op: &vim::Op,
+    window: &mut Window,
+    cx: &mut Context<InputBaseState<M>>,
+) {
+    match op {
+        vim::Op::Edit { range, text } => {
+            if range.is_empty() && text.is_empty() {
+                return;
+            }
+            state.set_selected_range(range.clone(), cx);
+            state.replace(text.clone(), window, cx);
+        }
+        vim::Op::Cursor(at) => state.set_selected_range(*at..*at, cx),
+        vim::Op::Select(range) => state.set_selected_range(range.clone(), cx),
+        vim::Op::Undo | vim::Op::Redo | vim::Op::PageDown | vim::Op::PageUp | vim::Op::Find => {}
+    }
+}
+
+fn collapse_selection<M: MultiLineMode>(
+    state: &mut InputBaseState<M>,
+    cx: &mut Context<InputBaseState<M>>,
+) {
+    let start = state.selected_range().start;
+    state.set_selected_range(start..start, cx);
+}
+
 /// What [`ActiveEditor`] needs from either kind of input state.
 trait LineInput {
     fn cursor_line_bounds(&self) -> Option<Bounds<Pixels>>;
     fn cursor_line_trimmed(&self) -> String;
+    /// The text, the cursor and the selection, as Vim mode reads them.
+    fn vim_snapshot(&self) -> (String, usize, Range<usize>);
+    /// Window-space bounds of the character at the cursor, for Vim's block
+    /// cursor: a half-square at the end of a line.
+    fn cursor_char_bounds(&self) -> Option<Bounds<Pixels>>;
 }
 
 impl<M: MultiLineMode> LineInput for InputBaseState<M> {
@@ -132,6 +218,29 @@ impl<M: MultiLineMode> LineInput for InputBaseState<M> {
 
     fn cursor_line_trimmed(&self) -> String {
         insert::cursor_line_trimmed(self)
+    }
+
+    fn vim_snapshot(&self) -> (String, usize, Range<usize>) {
+        (
+            self.text().to_string(),
+            self.cursor(),
+            self.selected_range(),
+        )
+    }
+
+    fn cursor_char_bounds(&self) -> Option<Bounds<Pixels>> {
+        let at = self.cursor();
+        let caret = self.range_to_bounds(&(at..at))?;
+        // The character's right edge, when it is on the same row: a wrapped
+        // row ends with no edge of its own.
+        let width = self
+            .text()
+            .char_at(at)
+            .filter(|&c| c != '\n')
+            .and_then(|c| self.range_to_bounds(&(at + c.len_utf8()..at + c.len_utf8())))
+            .filter(|end| end.top() == caret.top() && end.left() > caret.left())
+            .map_or(caret.size.height / 2., |end| end.left() - caret.left());
+        Some(Bounds::new(caret.origin, size(width, caret.size.height)))
     }
 }
 
@@ -239,6 +348,10 @@ pub struct Smep {
     focus_handle: FocusHandle,
     /// Focus of the reading pane: the keys scroll the document from here.
     reading_focus: FocusHandle,
+    /// Vim mode's state, used while `settings.vim_mode` is on.
+    vim: Vim,
+    /// The editor Vim's keys last went to.
+    vim_editor: Option<EntityId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -304,9 +417,24 @@ impl Smep {
     ) -> Self {
         Theme::sync_system_appearance(Some(window), cx);
 
-        let subscriptions = vec![window.observe_window_appearance(|window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
-        })];
+        let this = cx.weak_entity();
+        let subscriptions = vec![
+            window.observe_window_appearance(|window, cx| {
+                Theme::sync_system_appearance(Some(window), cx);
+            }),
+            // Vim mode sees every keystroke before the key bindings and the
+            // editor do, and keeps the ones it uses from them.
+            cx.intercept_keystrokes({
+                move |event, window, cx| {
+                    let taken = this
+                        .update(cx, |this, cx| this.on_vim_key(&event.keystroke, window, cx))
+                        .unwrap_or(false);
+                    if taken {
+                        cx.stop_propagation();
+                    }
+                }
+            }),
+        ];
 
         // Closing with unsaved changes asks first, tab by tab. The platform
         // close is vetoed here and redone once the prompts resolve.
@@ -340,6 +468,8 @@ impl Smep {
             reading_focus: cx.focus_handle(),
             settings,
             editing: false,
+            vim: Vim::default(),
+            vim_editor: None,
             _subscriptions: subscriptions,
         };
         this.push_tab(document, window, cx);
@@ -538,6 +668,10 @@ impl Smep {
     /// Switch between editing (the remembered view mode) and reading.
     pub fn set_editing(&mut self, editing: bool, window: &mut Window, cx: &mut Context<Self>) {
         if editing {
+            // Writing starts in Vim's Normal mode, as Vim itself does.
+            if !self.editing {
+                self.vim.reset();
+            }
             self.set_view_mode(self.settings.view_mode, window, cx);
             return;
         }
@@ -749,6 +883,62 @@ impl Smep {
         cx.notify();
     }
 
+    pub fn vim_enabled(&self) -> bool {
+        self.settings.vim_mode
+    }
+
+    /// Turn Vim mode on (in Normal mode) or off, and remember it.
+    fn toggle_vim(&mut self, _: &ToggleVim, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings.vim_mode = !self.settings.vim_mode;
+        self.vim.reset();
+        self.vim_editor = None;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Vim mode applies: it is on, and the document is being edited.
+    fn vim_active(&self) -> bool {
+        self.settings.vim_mode && self.editing
+    }
+
+    /// A keystroke on its way to the window, seen first for Vim mode.
+    /// Returns whether Vim took it; then nothing else sees it.
+    fn on_vim_key(
+        &mut self,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.vim_active() || self.insert_menu.is_some() {
+            return false;
+        }
+        let Some(key) = vim::Key::from_keystroke(keystroke) else {
+            return false;
+        };
+        // Typing in Insert mode: straight to the editor, the text unread.
+        if self.vim.passes(&key) {
+            return false;
+        }
+        let editor = self.active_editor(cx);
+        if !editor.focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        let id = editor.entity_id();
+        if self.vim_editor != Some(id) {
+            self.vim.retarget();
+            self.vim_editor = Some(id);
+        }
+        let (text, cursor, selection) = editor.read(cx, |state| state.vim_snapshot());
+        match self.vim.key(key, &text, cursor, selection) {
+            vim::Outcome::Pass => false,
+            vim::Outcome::Handled(ops) => {
+                editor.apply_vim(&ops, window, cx);
+                cx.notify();
+                true
+            }
+        }
+    }
+
     fn toggle_fullscreen(
         &mut self,
         _: &ToggleFullscreen,
@@ -780,6 +970,7 @@ impl Smep {
         let outline = self.outline_shown();
         let text_width = self.text_width();
         let current_theme = self.preview_theme();
+        let vim_mode = self.vim_enabled();
         let this = cx.weak_entity();
 
         let button = |id: &'static str, label: &'static str| {
@@ -827,6 +1018,12 @@ impl Smep {
                         .separator()
                         .menu("Find", Box::new(Search))
                         .menu("Replace", Box::new(Replace))
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Vim Mode")
+                                .checked(vim_mode)
+                                .action(Box::new(ToggleVim)),
+                        )
                         .action_context(focus.clone())
                 }
             }))
@@ -2203,6 +2400,60 @@ impl Smep {
         )
     }
 
+    /// Vim's block cursor over the character at the cursor, in Normal mode.
+    /// The editor's own caret stays; the block shows the character a
+    /// command starts from.
+    fn render_vim_cursor(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        if !self.vim_active() || self.vim.mode() != vim::Mode::Normal || self.insert_menu.is_some()
+        {
+            return None;
+        }
+        let editor = self.active_editor(cx);
+        if !editor.focus_handle(cx).is_focused(window) {
+            return None;
+        }
+        let bounds = editor.read(cx, |state| state.cursor_char_bounds())?;
+        let block = div()
+            .debug_selector(|| "vim-cursor".into())
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .bg(cx.theme().caret.opacity(0.35));
+        Some(
+            deferred(anchored().position(bounds.origin).child(block))
+                .with_priority(1)
+                .into_any_element(),
+        )
+    }
+
+    /// Vim's mode, and the keys of a command being typed, in the corner of
+    /// the pane being edited.
+    fn render_vim_status(&self, cx: &App) -> Option<AnyElement> {
+        if !self.vim_active() {
+            return None;
+        }
+        let pending = self.vim.pending_keys();
+        let label = if pending.is_empty() {
+            self.vim.mode().label().to_string()
+        } else {
+            format!("{}  {pending}", self.vim.mode().label())
+        };
+        Some(
+            div()
+                .debug_selector(|| "vim-status".into())
+                .absolute()
+                .bottom_2()
+                .right_4()
+                .px_1p5()
+                .rounded_sm()
+                .bg(cx.theme().background.opacity(0.85))
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(cx.theme().muted_foreground)
+                .child(label)
+                .into_any_element(),
+        )
+    }
+
     /// The open insert menu, focused so the keyboard drives it.
     fn render_insert_menu(
         &self,
@@ -2325,6 +2576,8 @@ impl Render for Smep {
         let rendered_view = tab.rendered.clone();
 
         let plus = self.render_plus(window, cx);
+        let vim_cursor = self.render_vim_cursor(window, cx);
+        let vim_status = self.render_vim_status(cx);
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
         let tab_bar = self.render_tab_bar(cx);
@@ -2402,6 +2655,7 @@ impl Render for Smep {
                 .on_action(cx.listener(Self::toggle_editing))
                 .on_action(cx.listener(Self::toggle_menu_bar))
                 .on_action(cx.listener(Self::toggle_outline))
+                .on_action(cx.listener(Self::toggle_vim))
                 .on_action(cx.listener(Self::text_narrow))
                 .on_action(cx.listener(Self::text_medium))
                 .on_action(cx.listener(Self::text_wide))
@@ -2414,14 +2668,18 @@ impl Render for Smep {
                 .child(title_bar)
                 .children(tab_bar)
                 .child(
-                    h_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .child(outline)
-                        .child(div().flex_1().min_w_0().h_full().child(content)),
+                    h_flex().flex_1().min_h_0().w_full().child(outline).child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(content)
+                            .children(vim_status),
+                    ),
                 )
                 .children(plus)
+                .children(vim_cursor)
                 .children(menu),
         )
     }
@@ -4586,6 +4844,217 @@ mod tests {
             PreviewFormat::for_path(Path::new("README")),
             PreviewFormat::Markdown
         );
+    }
+
+    /// A window writing with Vim mode on; the source editor has the focus.
+    fn open_vim<'a>(
+        cx: &'a mut TestAppContext,
+        text: &str,
+    ) -> (Entity<Smep>, &'a mut VisualTestContext) {
+        let (smep, cx) = open_with(
+            cx,
+            Document {
+                path: None,
+                text: text.to_string(),
+                format: PreviewFormat::Markdown,
+                origin: None,
+            },
+            Settings {
+                vim_mode: true,
+                ..Settings::default()
+            },
+        );
+        draw(cx);
+        (smep, cx)
+    }
+
+    fn vim_mode(smep: &Entity<Smep>, cx: &VisualTestContext) -> crate::vim::Mode {
+        cx.read(|cx| smep.read(cx).vim.mode())
+    }
+
+    fn cursor<M: InputModeKind>(
+        editor: &Entity<InputBaseState<M>>,
+        cx: &VisualTestContext,
+    ) -> usize {
+        cx.read(|cx| editor.read(cx).cursor())
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_edits_with_commands_and_types_in_insert_mode(cx: &mut TestAppContext) {
+        use crate::vim::Mode;
+        let (smep, cx) = open_vim(cx, "one two\nthree");
+        let editor = editor(&smep, cx);
+        assert_eq!(
+            vim_mode(&smep, cx),
+            Mode::Normal,
+            "writing starts in Normal mode"
+        );
+
+        // Letters are commands in Normal mode; none reaches the text.
+        cx.simulate_keystrokes("x");
+        assert_eq!(value(&editor, cx), "ne two\nthree");
+        cx.simulate_keystrokes("d w");
+        assert_eq!(value(&editor, cx), "two\nthree");
+        cx.simulate_keystrokes("q z shift-q");
+        assert_eq!(
+            value(&editor, cx),
+            "two\nthree",
+            "unbound keys type nothing"
+        );
+        cx.simulate_keystrokes("j d d");
+        assert_eq!(value(&editor, cx), "two");
+        assert!(dirty(&smep, cx), "Vim's edits are the document's");
+
+        // Insert mode types; Escape steps back onto the last character.
+        cx.simulate_keystrokes("i h i");
+        assert_eq!(vim_mode(&smep, cx), Mode::Insert);
+        assert_eq!(value(&editor, cx), "hitwo");
+        cx.simulate_keystrokes("escape");
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+        assert_eq!(cursor(&editor, cx), 1);
+
+        // `u` is the editor's own undo; the cursor lands, nothing selected.
+        cx.simulate_keystrokes("u");
+        assert_eq!(value(&editor, cx), "two");
+        let (start, end) = cx.read(|cx| {
+            let range = editor.read(cx).selected_range();
+            (range.start, range.end)
+        });
+        assert_eq!(start, end, "a cursor, not a selection");
+        cx.simulate_keystrokes("ctrl-r");
+        assert_eq!(value(&editor, cx), "hitwo");
+
+        // Visual mode selects through the editor's selection.
+        cx.simulate_keystrokes("0 v right");
+        assert_eq!(vim_mode(&smep, cx), Mode::Visual);
+        assert_eq!(
+            cx.read(|cx| editor.read(cx).selected_text().to_string()),
+            "hi"
+        );
+        cx.simulate_keystrokes("d");
+        assert_eq!(value(&editor, cx), "two");
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+
+        // `p` puts what `d` took; `.` repeats the put.
+        cx.simulate_keystrokes("p .");
+        assert_eq!(value(&editor, cx), "thihiwo");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_leaves_the_shortcuts_and_shows_its_mode(cx: &mut TestAppContext) {
+        use crate::vim::Mode;
+        let (smep, cx) = open_vim(cx, "# A\n\ntext");
+        let editor = editor(&smep, cx);
+
+        // The window's shortcuts pass through Normal mode.
+        let outline = cx.read(|cx| smep.read(cx).outline_shown());
+        cx.simulate_keystrokes(&primary("shift-l"));
+        assert_ne!(cx.read(|cx| smep.read(cx).outline_shown()), outline);
+        cx.simulate_keystrokes(&primary("2"));
+        assert_eq!(value(&editor, cx), "# A\n\ntext", "shortcuts edit nothing");
+
+        // The mode in the corner, the block cursor in Normal mode only.
+        draw(cx);
+        assert!(cx.debug_bounds("vim-status").is_some());
+        assert!(cx.debug_bounds("vim-cursor").is_some());
+        let status = |cx: &VisualTestContext| {
+            cx.read(|cx| {
+                let this = smep.read(cx);
+                (this.vim.mode().label(), this.vim.pending_keys())
+            })
+        };
+        cx.simulate_keystrokes("2 d");
+        assert_eq!(status(cx), ("NORMAL", "2d".to_string()));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(status(cx), ("NORMAL", String::new()));
+        cx.simulate_keystrokes("a");
+        draw(cx);
+        assert_eq!(status(cx), ("INSERT", String::new()));
+        assert!(
+            cx.debug_bounds("vim-cursor").is_none(),
+            "Insert mode keeps the caret"
+        );
+
+        // Off (from Insert mode): the keys type, and nothing of Vim shows.
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        assert!(!cx.read(|cx| smep.read(cx).vim_enabled()));
+        cx.simulate_keystrokes("x");
+        assert_eq!(value(&editor, cx), "#x A\n\ntext");
+        draw(cx);
+        assert!(cx.debug_bounds("vim-status").is_none());
+        assert!(cx.debug_bounds("vim-cursor").is_none());
+
+        // On again: Normal mode, whatever mode it was left in.
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+        cx.simulate_keystrokes("0 x");
+        assert_eq!(value(&editor, cx), "x A\n\ntext");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_resets_where_it_should_and_undo_leaves_a_cursor(cx: &mut TestAppContext) {
+        use crate::vim::Mode;
+        let (smep, cx) = open_vim(cx, "one two three");
+        let editor = editor(&smep, cx);
+
+        // The editor's undo selects what it restores; Vim puts a cursor at
+        // its start, or the next key would take it for a mouse selection.
+        cx.simulate_keystrokes("w d w u");
+        assert_eq!(value(&editor, cx), "one two three");
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+        cx.simulate_keystrokes("x");
+        assert_eq!(value(&editor, cx), "one wo three");
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+
+        // Writing again starts in Normal mode.
+        cx.simulate_keystrokes("i");
+        assert_eq!(vim_mode(&smep, cx), Mode::Insert);
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.set_editing(false, window, cx);
+                this.set_editing(true, window, cx);
+            })
+        });
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+
+        // A command half typed in one editor does not finish in another.
+        cx.simulate_keystrokes("d");
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 0..12, cx);
+        let block = active_block(&smep, cx);
+        cx.simulate_keystrokes("x");
+        assert_eq!(value(&block, cx), "one wo thre", "`x` alone, not `dx`");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_works_in_a_block_and_not_while_reading(cx: &mut TestAppContext) {
+        use crate::vim::Mode;
+        let (smep, cx) = open_vim(cx, "# Title\n\npara");
+        let document = editor(&smep, cx);
+        rendered_mode(&smep, cx);
+        activate_block(&smep, 9..13, cx);
+        let block = active_block(&smep, cx);
+
+        // A block editor takes Vim's keys too.
+        cx.simulate_keystrokes("0 x");
+        assert_eq!(value(&block, cx), "ara");
+        assert_eq!(value(&document, cx), "# Title\n\nara");
+        cx.simulate_keystrokes("A !");
+        assert_eq!(value(&document, cx), "# Title\n\nara!");
+
+        // Escape leaves Insert mode first; the next one ends the block edit.
+        cx.simulate_keystrokes("escape");
+        assert_eq!(vim_mode(&smep, cx), Mode::Normal);
+        let rendered = cx.read(|cx| smep.read(cx).tab().rendered.clone());
+        assert!(cx.read(|cx| rendered.read(cx).active_editor().is_some()));
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| rendered.read(cx).active_editor().is_none()));
+
+        // Reading: the keys scroll the page, as without Vim mode.
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.set_editing(false, window, cx)));
+        cx.simulate_keystrokes("x d d");
+        assert_eq!(value(&document, cx), "# Title\n\nara!");
     }
 
     #[test]

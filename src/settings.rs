@@ -95,6 +95,8 @@ pub struct Settings {
     pub text_width: TextWidth,
     /// The deepest heading level the outline lists, 1 to 6 (6: all).
     pub outline_depth: u8,
+    /// Whether the editors take Vim's keys (Normal, Insert, Visual modes).
+    pub vim_mode: bool,
     /// Where these settings live; `None` means they are never written.
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -109,6 +111,7 @@ impl Default for Settings {
             outline_folded: false,
             text_width: TextWidth::default(),
             outline_depth: crate::outline::ALL_LEVELS,
+            vim_mode: false,
             path: None,
         }
     }
@@ -199,7 +202,7 @@ mod tests {
         settings.save().unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
-            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true\noutline_folded = false\ntext_width = \"medium\"\noutline_depth = 6"
+            "preview_theme = \"night\"\nview_mode = \"split\"\nmenu_bar = true\noutline_folded = false\ntext_width = \"medium\"\noutline_depth = 6\nvim_mode = false"
         );
         assert_eq!(Settings::load_from(path.clone()), settings);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -214,8 +217,10 @@ mod tests {
         assert!(!settings.outline_folded, "the outline shows unless folded");
         assert_eq!(settings.text_width, TextWidth::Medium);
         assert_eq!(settings.outline_depth, 6, "every level");
-        let settings: Settings = toml::from_str("outline_depth = 2\n").unwrap();
+        assert!(!settings.vim_mode, "Vim mode is asked for");
+        let settings: Settings = toml::from_str("outline_depth = 2\nvim_mode = true\n").unwrap();
         assert_eq!(settings.outline_depth, 2);
+        assert!(settings.vim_mode);
         let settings: Settings =
             toml::from_str("outline_folded = true\ntext_width = \"full\"\n").unwrap();
         assert!(settings.outline_folded);

@@ -244,6 +244,39 @@ next to `settings.toml`) they replace the built-in ones for every export,
 whatever the theme. Tests never read the user's directory: a `Settings`
 without a path has no directory.
 
+## Vim mode
+
+`src/vim.rs` is the engine, pure and tested on its own: `Vim::key` takes a
+key, the text, the cursor and the selection, and answers `Outcome::Pass`
+(the editor or the window handles the key as usual) or
+`Outcome::Handled(ops)`: edits, cursor moves, a selection to show, or an
+action (undo, redo, page up/down, find). It never holds the text, so the
+same engine drives the source editor and a block editor. Offsets are UTF-8
+bytes on character boundaries; a line ends at `\n` or at the `\r` of `\r\n`
+(`line_end`, `after_break`, `newline`), so CRLF documents stay CRLF.
+
+The keys reach it first: `Smep::new` registers a keystroke interceptor
+(`cx.intercept_keystrokes`), which runs before the key bindings and the
+input handler. `Smep::on_vim_key` passes everything while Vim mode is off,
+while reading, while a menu is open, or when no editor has the focus; in
+Insert mode it passes every key but Escape without reading the text. A
+taken key stops propagation, which also stops its text: Windows skips
+`TranslateMessage` (no `WM_CHAR`) for a handled key-down, macOS skips
+`insertText:`, and the test platform's `dispatch_keystroke` skips the input
+handler. A CJK input method in its native mode sees the key before gpui
+does, so its text can still reach the document in Normal mode (README).
+
+`ActiveEditor::apply_vim` makes the edits with `set_selected_range` +
+`replace` (each one an undo step) and runs the actions through the editor's
+own focus handle (`FocusHandle::dispatch_action`, synchronous); after an
+undo it collapses any restored selection, or the next key would read it as
+a mouse selection and start Visual mode. Normal mode's block cursor is a
+deferred overlay at `range_to_bounds` of the character under the cursor;
+the mode and the keys of a pending command sit in the pane's corner. The
+mode is the window's, not the editor's: switching editor (`retarget`) ends
+Visual mode and a half-typed command, and starting to write resets to
+Normal mode. `Settings::vim_mode` keeps the switch (Edit, Vim Mode).
+
 ## Icon
 
 `assets/icon/logo.svg` is the design (a cinnabar seal with an M on the

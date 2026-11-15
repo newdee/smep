@@ -24,6 +24,7 @@ mod outline;
 mod rendered;
 mod settings;
 mod theme;
+mod vim;
 
 use std::io::Write as _;
 use std::path::PathBuf;
