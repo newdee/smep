@@ -21,7 +21,7 @@ The request: "把 :w :q 和 n/N 搜索也加上".
 | D | static: docs against code | 171 + 5 | README said messages last until the next key, but keys Vim lets through (Insert-mode typing, shortcuts) left them → any keystroke clears them (`Vim::clear_message` in the interceptor; the ex test checks a shortcut clears one; the mutation fails it); dev.md still said any blur closes the line → corrected |
 | 1 (clean) | static: fmt 0 lines; clippy `-D warnings` 0 (default and `--no-default-features`); README's 8 new claims and dev.md against the code | 171 + 5, slim 161 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times | 171 + 5 each time, 0 failed | none |
-| 3 | the other platforms: CI | pending | |
+| 3 (clean) | the other platforms: CI run 43747885395 for `7d56ba7`: ubuntu 4 m 52 s (172 + 4), macos 6 m 48 s (170 + 4), windows 8 m 40 s (171 + 5), 0 failed | clean | none |
 
 Engine tests: 29 (3 new: search, wrap messages, Ex commands; the fuzz alphabet and the degenerate sweep now include `/ ? n N * # :`). App tests: 7 `vim_mode_*` (3 new: searching through the command line incl. text set as an input method would; closing it when left; `:w`, `:q`, `:q!`, `:wq` on real files, the last one closing the window).
 
