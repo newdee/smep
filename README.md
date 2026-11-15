@@ -189,13 +189,25 @@ and `$`; Shift+arrows select as usual, and Page Up / Down scroll.
 | `u`, Ctrl+R | Undo, redo |
 | `.` | Repeat the last change made from Normal mode (with what was typed in Insert mode); Visual-mode changes are not repeated |
 | `v`, `V` | Visual, Visual Line; then a move, `o`, `d` `c` `y` `p` `r` `J` `~` `u` `U` |
-| `/` | Find (the source editor's find bar) |
+| `/` `?` + text + Enter, `n` `N` | Search forward, backward; the next match, the one before (round the end of the document) |
+| `*` `#` | Search for the word under the cursor, forward, backward |
+| `:w`, `:q`, `:q!`, `:wq`, `:x` | Save; close the tab (`:q` refuses while it has unsaved changes, `:q!` drops them); save and close. On the last tab, closing closes smep |
+| `:12`, `:$` | Go to line 12, to the last line |
 | Ctrl+D, Ctrl+U | Page down, page up |
+
+`:`, `/` and `?` open a command line along the foot of the pane: type there
+(an input method works), Enter runs it, Escape (or Backspace on an empty
+line) closes it. A search is for the text as typed, case for case, not a
+pattern; `/` + Enter alone searches for the last text again, and a search
+works after an operator (`d/foo`) and in Visual mode. Messages (a search
+going round the end, an error) show in the pane's corner until the next
+key. Ctrl+F still opens the editor's find bar.
 
 Text selected with the mouse (or Ctrl+A) starts Visual mode. Yanks go to
 smep's own register, not the system clipboard (Ctrl+C / Ctrl+V still
-reach that). Not there: `:` commands, `/` with `n` / `N`, marks, macros,
-named registers, `>` / `<`.
+reach that). Not there: other `:` commands (`:w` with a file name, `:s`,
+ranges), patterns in searches, match highlighting, marks, macros, named
+registers, `>` / `<`.
 
 Note: Normal mode reads keys, not text. With a CJK input method in its
 native mode, the keys reach the input method first and its text lands in

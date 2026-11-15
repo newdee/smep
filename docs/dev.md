@@ -266,6 +266,21 @@ taken key stops propagation, which also stops its text: Windows skips
 handler. A CJK input method in its native mode sees the key before gpui
 does, so its text can still reach the document in Normal mode (README).
 
+The command line (`:`, `/`, `?`) is a real single-line `InputState` at the
+foot of the pane (`Smep::vim_prompt`), so an input method and paste work
+in it: the engine answers `Op::Prompt` and keeps the command half typed
+(`d/` waits for its search); the interceptor takes Enter, Escape and
+Backspace-on-empty while the line has the focus, and lets the rest type;
+`Vim::submit` (or `Vim::cancel`) finishes the command. Searches are literal
+and case-sensitive (`find_match`, wrapping round); `.` repeats `d/foo` as
+`dn`. Ex commands come back as `Op::Write` / `Op::Quit` / `Op::WriteQuit`,
+which `Smep::run_vim_commands` carries out with `save_task` and
+`remove_tab` (`:q` on the last tab removes the window, and smep quits).
+A click elsewhere in the window (a blur while the window is active) or a
+tab switch closes the line without running it; another application coming
+to the front leaves it open. Messages (`Vim::message`) go with the next
+keystroke, whoever takes it.
+
 `ActiveEditor::apply_vim` makes the edits with `set_selected_range` +
 `replace` (each one an undo step) and runs the actions through the editor's
 own focus handle (`FocusHandle::dispatch_action`, synchronous); after an

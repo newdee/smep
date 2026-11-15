@@ -146,8 +146,51 @@ pub enum Op {
     Redo,
     PageDown,
     PageUp,
-    /// Open the editor's find bar.
-    Find,
+    /// Open the command line: `:`, `/` or `?`. Its text comes back through
+    /// [`Vim::submit`], or [`Vim::cancel`] drops it.
+    Prompt(Prompt),
+    /// `:w`: save the document.
+    Write,
+    /// `:q`, `:q!` (`force`: unsaved changes or not).
+    Quit {
+        force: bool,
+    },
+    /// `:wq`, `:x` (`if_modified`: write only when there is something to).
+    WriteQuit {
+        if_modified: bool,
+    },
+}
+
+/// What the command line is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    /// `:`, an Ex command.
+    Command,
+    /// `/`, a search forward.
+    SearchForward,
+    /// `?`, a search backward.
+    SearchBackward,
+}
+
+impl Prompt {
+    /// The character the command line starts with.
+    pub fn symbol(self) -> char {
+        match self {
+            Self::Command => ':',
+            Self::SearchForward => '/',
+            Self::SearchBackward => '?',
+        }
+    }
+}
+
+/// The last search, which `n` and `N` repeat.
+#[derive(Clone, Debug)]
+struct Search {
+    /// Literal text, matched case for case.
+    pattern: String,
+    forward: bool,
+    /// `*` and `#`: whole words only.
+    whole: bool,
 }
 
 /// What became of a key.
@@ -247,6 +290,10 @@ enum Motion {
     LastLine,
     /// `gg`.
     FirstLine,
+    /// The last search again: `n`, or `N` (`reverse`) the other way.
+    SearchNext {
+        reverse: bool,
+    },
 }
 
 impl Motion {
@@ -322,6 +369,8 @@ enum Step {
     More,
     /// The command is complete. `bool`: it changed the text (for `.`).
     Done(Vec<Op>, bool),
+    /// The command goes on in the command line.
+    Prompt(Prompt),
     /// Not Vim's.
     Pass,
 }
@@ -366,11 +415,77 @@ pub struct Vim {
     recording: Option<(Vec<Key>, Option<usize>)>,
     /// Replaying `.`: nothing is recorded.
     replaying: bool,
+    /// The command line open for the command being typed.
+    prompt: Option<Prompt>,
+    last_search: Option<Search>,
+    /// What Vim says on the status line until the next key: an error, a
+    /// search wrapping round.
+    message: Option<String>,
 }
 
 impl Vim {
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    /// Say something on the status line until the next key.
+    pub fn set_message(&mut self, message: impl Into<String>) {
+        self.message = Some(message.into());
+    }
+
+    /// The next key came: whatever was said goes. Returns whether there
+    /// was something.
+    pub fn clear_message(&mut self) -> bool {
+        self.message.take().is_some()
+    }
+
+    /// The command line's text, entered: run the Ex command, or search.
+    pub fn submit(&mut self, line: &str, text: &str, cursor: usize) -> Outcome {
+        self.message = None;
+        let Some(prompt) = self.prompt.take() else {
+            return Outcome::Handled(Vec::new());
+        };
+        let visual = self.mode.is_visual();
+        let cur = if visual {
+            clip(text, self.head)
+        } else {
+            clamp_normal(text, cursor)
+        };
+        let step = match prompt {
+            Prompt::Command => self.ex(line, text, cur),
+            Prompt::SearchForward | Prompt::SearchBackward => {
+                let forward = prompt == Prompt::SearchForward;
+                if line.is_empty() {
+                    // `/` alone searches for the last text again.
+                    if let Some(search) = &mut self.last_search {
+                        search.forward = forward;
+                    }
+                } else {
+                    self.last_search = Some(Search {
+                        pattern: line.to_string(),
+                        forward,
+                        whole: false,
+                    });
+                }
+                // For `.`, the search stands as `n`: `d/foo` repeats as `dn`.
+                if let Some(last) = self.keys.last_mut() {
+                    *last = Key::Char('n');
+                }
+                self.motion(Motion::SearchNext { reverse: false }, text, cur)
+            }
+        };
+        self.finish(step, visual)
+    }
+
+    /// The command line closed without its text: the command is dropped.
+    pub fn cancel(&mut self) {
+        if self.prompt.take().is_some() {
+            self.end_command();
+        }
     }
 
     /// The keys of the command being typed, as Vim shows them: `2d`, `f`.
@@ -382,6 +497,7 @@ impl Vim {
     /// change are kept.
     pub fn reset(&mut self) {
         self.mode = Mode::Normal;
+        self.prompt = None;
         self.end_command();
         self.recording = None;
         self.shown = 0..0;
@@ -394,6 +510,7 @@ impl Vim {
         if self.mode.is_visual() {
             self.mode = Mode::Normal;
         }
+        self.prompt = None;
         self.end_command();
         self.recording = None;
         self.shown = 0..0;
@@ -409,6 +526,9 @@ impl Vim {
     /// and `selection` selected.
     pub fn key(&mut self, key: Key, text: &str, cursor: usize, selection: Range<usize>) -> Outcome {
         let cursor = clip(text, cursor);
+        self.message = None;
+        // A key for the editor while the command line was open: it closed.
+        self.cancel();
         match self.mode {
             Mode::Insert => self.insert_key(key, text, cursor),
             Mode::Visual | Mode::VisualLine if selection != self.shown => {
@@ -474,8 +594,19 @@ impl Vim {
         if !self.replaying {
             self.keys.push(key.clone());
         }
-        match self.command(key, text, cur) {
+        let step = self.command(key, text, cur);
+        self.finish(step, visual)
+    }
+
+    /// What a command's step comes to; `visual`: whether it was typed in
+    /// Visual mode (those changes are not repeated by `.`).
+    fn finish(&mut self, step: Step, visual: bool) -> Outcome {
+        match step {
             Step::More => Outcome::Handled(Vec::new()),
+            Step::Prompt(prompt) => {
+                self.prompt = Some(prompt);
+                Outcome::Handled(vec![Op::Prompt(prompt)])
+            }
             Step::Pass => {
                 self.end_command();
                 Outcome::Pass
@@ -585,6 +716,27 @@ impl Vim {
             'g' => {
                 self.pending = Some(Pending::G);
                 return Step::More;
+            }
+            '/' => return Step::Prompt(Prompt::SearchForward),
+            '?' => return Step::Prompt(Prompt::SearchBackward),
+            ':' if !visual && self.operator.is_none() => return Step::Prompt(Prompt::Command),
+            'n' | 'N' => {
+                return self.motion(Motion::SearchNext { reverse: c == 'N' }, text, cur);
+            }
+            '*' | '#' => {
+                // The word under the cursor, as a whole word.
+                let Some(range) = word_object(text, cur, true, false)
+                    .filter(|range| text[range.clone()].chars().any(|c| class(c, false) >= 2))
+                else {
+                    self.message = Some("E348: No string under cursor".into());
+                    return abort();
+                };
+                self.last_search = Some(Search {
+                    pattern: text[range].to_string(),
+                    forward: c == '*',
+                    whole: true,
+                });
+                return self.motion(Motion::SearchNext { reverse: false }, text, cur);
             }
             'i' | 'a' if visual || self.operator.is_some() => {
                 self.pending = Some(Pending::Object { inner: c == 'i' });
@@ -716,7 +868,6 @@ impl Vim {
                 done(vec![self.show(text)])
             }
             '.' => self.repeat(text, cur),
-            '/' => done(vec![Op::Find]),
             _ => abort(),
         }
     }
@@ -957,6 +1108,34 @@ impl Vim {
                     Kind::Exclusive
                 },
             ),
+            Motion::SearchNext { reverse } => {
+                let Some(search) = self.last_search.clone() else {
+                    self.message = Some("E35: No previous regular expression".into());
+                    return None;
+                };
+                let forward = search.forward != reverse;
+                let mut at = cur;
+                let mut wrapped = false;
+                for _ in 0..count {
+                    let Some((found, wrap)) = find_match(text, at, &search, forward) else {
+                        self.message = Some(format!("E486: Pattern not found: {}", search.pattern));
+                        return None;
+                    };
+                    at = found;
+                    wrapped |= wrap;
+                }
+                if wrapped {
+                    self.message = Some(
+                        if forward {
+                            "search hit BOTTOM, continuing at TOP"
+                        } else {
+                            "search hit TOP, continuing at BOTTOM"
+                        }
+                        .into(),
+                    );
+                }
+                (at, Kind::Exclusive)
+            }
             Motion::LastLine | Motion::FirstLine => {
                 let line = match self.explicit_count() {
                     Some(n) => nth_line_start(text, n),
@@ -1105,6 +1284,40 @@ impl Vim {
         }
         ops.push(Op::Cursor(clamp_normal(&result, at)));
         changed(ops)
+    }
+
+    /// An Ex command from the command line: `:w`, `:q`, `:q!`, `:wq`, `:x`,
+    /// `:12`, `:$`.
+    fn ex(&mut self, line: &str, text: &str, cur: usize) -> Step {
+        let command = line.trim().trim_start_matches(':').trim();
+        match command {
+            "" | "noh" | "nohlsearch" => done(Vec::new()),
+            "w" | "w!" | "write" | "write!" => done(vec![Op::Write]),
+            "q" | "quit" | "clo" | "close" => done(vec![Op::Quit { force: false }]),
+            "q!" | "quit!" | "clo!" | "close!" => done(vec![Op::Quit { force: true }]),
+            "wq" | "wq!" => done(vec![Op::WriteQuit { if_modified: false }]),
+            "x" | "x!" | "xit" | "exit" => done(vec![Op::WriteQuit { if_modified: true }]),
+            "$" => self.motion(Motion::LastLine, text, cur),
+            _ if command.bytes().all(|b| b.is_ascii_digit()) => {
+                self.count = Some(
+                    command
+                        .parse::<usize>()
+                        .unwrap_or(usize::MAX)
+                        .clamp(1, 99_999),
+                );
+                self.motion(Motion::FirstLine, text, cur)
+            }
+            _ if command.starts_with("w ") || command.starts_with("write ") => {
+                self.message = Some(
+                    "E: :w writes the document's own file; File, Save As saves it elsewhere".into(),
+                );
+                abort()
+            }
+            _ => {
+                self.message = Some(format!("E492: Not an editor command: {command}"));
+                abort()
+            }
+        }
     }
 
     /// `.`: the last change again, at the cursor.
@@ -1296,7 +1509,14 @@ fn simulate(text: &mut String, mut cursor: usize, ops: &[Op]) -> usize {
             }
             Op::Cursor(at) => cursor = *at,
             Op::Select(range) => cursor = range.end,
-            Op::Undo | Op::Redo | Op::PageDown | Op::PageUp | Op::Find => {}
+            Op::Undo
+            | Op::Redo
+            | Op::PageDown
+            | Op::PageUp
+            | Op::Prompt(_)
+            | Op::Write
+            | Op::Quit { .. }
+            | Op::WriteQuit { .. } => {}
         }
     }
     cursor
@@ -1740,6 +1960,58 @@ fn find_in_line(
     }
 }
 
+/// The next match of `search` after `at` (before it, going back), round
+/// the end of the text if need be; `bool`: it wrapped round.
+fn find_match(text: &str, at: usize, search: &Search, forward: bool) -> Option<(usize, bool)> {
+    let pattern = search.pattern.as_str();
+    if pattern.is_empty() {
+        return None;
+    }
+    // `*` and `#` want whole words: no word character of the same kind on
+    // either side.
+    let whole = |ix: usize| {
+        if !search.whole {
+            return true;
+        }
+        let edge = |c: Option<char>, inner: Option<char>| match (c, inner) {
+            (Some(c), Some(inner)) => class(c, false) != class(inner, false),
+            _ => true,
+        };
+        let end = ix + pattern.len();
+        edge(text[..ix].chars().next_back(), pattern.chars().next())
+            && edge(text[end..].chars().next(), pattern.chars().next_back())
+    };
+    let after = next(text, at);
+    if forward {
+        let ahead = text[after..]
+            .match_indices(pattern)
+            .map(|(ix, _)| after + ix)
+            .find(|&ix| whole(ix));
+        if let Some(ix) = ahead {
+            return Some((ix, false));
+        }
+        text[..after.min(text.len())]
+            .match_indices(pattern)
+            .map(|(ix, _)| ix)
+            .find(|&ix| whole(ix))
+            .map(|ix| (ix, true))
+    } else {
+        // A match starting before the cursor counts even when it runs past.
+        let mut matches = text
+            .rmatch_indices(pattern)
+            .map(|(ix, _)| ix)
+            .filter(|&ix| whole(ix));
+        let mut last = None;
+        for ix in matches.by_ref() {
+            if ix < at {
+                return Some((ix, false));
+            }
+            last.get_or_insert(ix);
+        }
+        last.map(|ix| (ix, true))
+    }
+}
+
 /// `iw`, `aw`, `i"`, `a(`, …: the range the object covers around `at`.
 fn text_object(text: &str, at: usize, c: char, inner: bool) -> Option<Range<usize>> {
     match c {
@@ -1906,19 +2178,66 @@ mod tests {
         selection: Range<usize>,
         /// Actions asked for (undo and the like), by name.
         actions: Vec<Op>,
+        /// The command line, while open: what has been typed in it.
+        line: Option<String>,
     }
 
     impl Editor {
         /// `|` marks the cursor.
         fn new(marked: &str) -> Self {
             let cursor = marked.find('|').expect("a cursor mark");
-            let text = marked.replacen('|', "", 1);
+            Self::at(&marked.replacen('|', "", 1), cursor)
+        }
+
+        fn at(text: &str, cursor: usize) -> Self {
             Self {
                 vim: Vim::default(),
-                text,
+                text: text.to_string(),
                 cursor,
                 selection: cursor..cursor,
                 actions: Vec::new(),
+                line: None,
+            }
+        }
+
+        /// A key while the command line is open, as the app's command line
+        /// takes it: typing, Backspace, Enter to run it, Escape to drop it.
+        fn line_key(&mut self, key: Key) {
+            let Some(line) = self.line.as_mut() else {
+                return;
+            };
+            match key {
+                Key::Char(c) => line.push(c),
+                Key::Backspace if !line.is_empty() => {
+                    line.pop();
+                }
+                Key::Enter => {
+                    let line = self.line.take().unwrap_or_default();
+                    if let Outcome::Handled(ops) = self.vim.submit(&line, &self.text, self.cursor) {
+                        self.apply(&ops);
+                    }
+                }
+                _ => {
+                    self.line = None;
+                    self.vim.cancel();
+                }
+            }
+        }
+
+        fn apply(&mut self, ops: &[Op]) {
+            for op in ops {
+                match op {
+                    Op::Select(range) => self.selection = range.clone(),
+                    Op::Prompt(_) => self.line = Some(String::new()),
+                    Op::Edit { .. } | Op::Cursor(_) => {}
+                    other => self.actions.push(other.clone()),
+                }
+                if !matches!(op, Op::Select(_)) {
+                    self.cursor = simulate(&mut self.text, self.cursor, std::slice::from_ref(op));
+                    self.selection = self.cursor..self.cursor;
+                } else {
+                    self.cursor = self.selection.end;
+                }
             }
         }
 
@@ -1926,6 +2245,10 @@ mod tests {
         /// editor would.
         fn type_keys(&mut self, spec: &str) -> &mut Self {
             for key in keys(spec) {
+                if self.line.is_some() {
+                    self.line_key(key);
+                    continue;
+                }
                 let outcome =
                     self.vim
                         .key(key.clone(), &self.text, self.cursor, self.selection.clone());
@@ -1950,22 +2273,7 @@ mod tests {
                         }
                         self.selection = self.cursor..self.cursor;
                     }
-                    Outcome::Handled(ops) => {
-                        for op in &ops {
-                            match op {
-                                Op::Select(range) => self.selection = range.clone(),
-                                Op::Edit { .. } | Op::Cursor(_) => {}
-                                other => self.actions.push(other.clone()),
-                            }
-                            if !matches!(op, Op::Select(_)) {
-                                self.cursor =
-                                    simulate(&mut self.text, self.cursor, std::slice::from_ref(op));
-                                self.selection = self.cursor..self.cursor;
-                            } else {
-                                self.cursor = self.selection.end;
-                            }
-                        }
-                    }
+                    Outcome::Handled(ops) => self.apply(&ops),
                 }
             }
             self
@@ -2294,12 +2602,106 @@ mod tests {
     #[test]
     fn the_actions_are_asked_for() {
         let mut editor = Editor::new("|abc");
-        editor.type_keys("u<C-r><C-d><C-u>/");
+        editor.type_keys("u<C-r><C-d><C-u>");
         assert_eq!(
             editor.actions,
-            [Op::Undo, Op::Redo, Op::PageDown, Op::PageUp, Op::Find]
+            [Op::Undo, Op::Redo, Op::PageDown, Op::PageUp]
         );
         assert_eq!(editor.marked(), "|abc");
+    }
+
+    #[test]
+    fn search_with_slash_question_n_and_star() {
+        check("|foo bar foo", "/foo<CR>", "foo bar |foo");
+        check("|a x a x a", "/x<CR>n", "a x a |x a");
+        check("|a x a x a", "/x<CR>nN", "a |x a x a");
+        check("a x a |x a", "?x<CR>", "a |x a x a");
+        check("a x a |x a", "?x<CR>n", "a x a |x a");
+        check("a x a |x a", "?x<CR>N", "a x a |x a");
+        check("|中文 测试 中文", "/中文<CR>", "中文 测试 |中文");
+        check("|foo foobar foo", "*", "foo foobar |foo");
+        check("foo foobar |foo", "#", "|foo foobar foo");
+        check("|a x a x a", "2/x<CR>", "a x a |x a");
+        check("|a x a x a", "/x<CR>/<CR>", "a x a |x a");
+        // `/` with an operator: up to the match.
+        check("|one two foo", "d/foo<CR>", "|foo");
+        check("|one two foo", "c/two<CR>X<Esc>", "|Xtwo foo");
+        // In Visual mode it extends the selection.
+        check("|ab x cd", "v/x<CR>d", "| cd");
+        // `.` repeats `d/b` as `dn`.
+        check("|xab xab", "d/b<CR>w.", "b |b");
+    }
+
+    #[test]
+    fn a_search_wraps_round_and_says_so() {
+        let mut editor = Editor::new("foo bar fo|o");
+        editor.type_keys("/bar<CR>");
+        assert_eq!(editor.marked(), "foo |bar foo");
+        assert_eq!(
+            editor.vim.message(),
+            Some("search hit BOTTOM, continuing at TOP")
+        );
+        editor.type_keys("l");
+        assert_eq!(editor.vim.message(), None, "a message lasts one key");
+
+        let mut editor = Editor::new("a |b c");
+        editor.type_keys("/zzz<CR>");
+        assert_eq!(editor.marked(), "a |b c");
+        assert_eq!(editor.vim.message(), Some("E486: Pattern not found: zzz"));
+
+        let mut editor = Editor::new("|abc");
+        editor.type_keys("n");
+        assert_eq!(
+            editor.vim.message(),
+            Some("E35: No previous regular expression")
+        );
+        editor.type_keys("*");
+        assert_eq!(
+            editor.marked(),
+            "|abc",
+            "the only one: found again, in place"
+        );
+        let mut editor = Editor::new("|  ");
+        editor.type_keys("*");
+        assert_eq!(editor.vim.message(), Some("E348: No string under cursor"));
+    }
+
+    #[test]
+    fn the_command_line_runs_ex_commands() {
+        let run = |marked: &str, spec: &str| {
+            let mut editor = Editor::new(marked);
+            editor.type_keys(spec);
+            editor
+        };
+        assert_eq!(run("|a", ":w<CR>").actions, [Op::Write]);
+        assert_eq!(run("|a", ":write<CR>").actions, [Op::Write]);
+        assert_eq!(run("|a", ":q<CR>").actions, [Op::Quit { force: false }]);
+        assert_eq!(run("|a", ":q!<CR>").actions, [Op::Quit { force: true }]);
+        assert_eq!(
+            run("|a", ":wq<CR>").actions,
+            [Op::WriteQuit { if_modified: false }]
+        );
+        assert_eq!(
+            run("|a", ":x<CR>").actions,
+            [Op::WriteQuit { if_modified: true }]
+        );
+        assert_eq!(run("|a\nb\nc", ":3<CR>").marked(), "a\nb\n|c");
+        assert_eq!(run("|a\nb\nc", ":$<CR>").marked(), "a\nb\n|c");
+        assert_eq!(run("a\nb\n|c", ":1<CR>").marked(), "|a\nb\nc");
+        assert_eq!(run("a\nb\n|c", ":0<CR>").marked(), "|a\nb\nc");
+        let editor = run("|a", ":frob<CR>");
+        assert!(editor.actions.is_empty());
+        assert_eq!(
+            editor.vim.message(),
+            Some("E492: Not an editor command: frob")
+        );
+        assert!(run("|a", ":w other.md<CR>").actions.is_empty());
+        // Escape, or Backspace on an empty line, closes it doing nothing.
+        assert!(run("|a", ":w<Esc>").actions.is_empty());
+        assert_eq!(run("|ab", ":<BS>x").marked(), "|b");
+        // A command line dropped drops the command it was part of.
+        assert_eq!(run("|abc", "d/<Esc>x").marked(), "|bc");
+        assert_eq!(run("|abc", ":<Esc>").vim.pending_keys(), "");
     }
 
     #[test]
@@ -2402,7 +2804,8 @@ mod tests {
     /// time): no panic, the cursor on a boundary, line breaks whole.
     #[test]
     fn random_keys_keep_the_invariants() {
-        const ALPHABET: &str = "hjklwbeWBE0^$GgfFtT;,%{}dcyxXsSDCYpPrJ~uvVoOiaIA.iw\"()1234 ";
+        const ALPHABET: &str =
+            "hjklwbeWBE0^$GgfFtT;,%{}dcyxXsSDCYpPrJ~uvVoOiaIA.iw\"()1234 /?nN*#:";
         let alphabet: Vec<char> = ALPHABET.chars().collect();
         let texts = [
             "one two three\nfour (five) \"six\"\n\nseven",
@@ -2421,13 +2824,7 @@ mod tests {
         let mut sequences = 0;
         for text in texts {
             for _ in 0..400 {
-                let mut editor = Editor {
-                    vim: Vim::default(),
-                    text: text.to_string(),
-                    cursor: 0,
-                    selection: 0..0,
-                    actions: Vec::new(),
-                };
+                let mut editor = Editor::at(text, 0);
                 let mut spec = String::new();
                 for _ in 0..16 {
                     let pick = random() as usize;
@@ -2493,7 +2890,8 @@ mod tests {
             for spec in [
                 "x", "dd", "dw", "de", "db", "D", "J", "p", "P", "yyp", "w", "b", "e", "G", "gg",
                 "}", "{", "%", "$", "0", "j", "k", "~", "rX", "vd", "Vd", "viwd", "da(", "ci\"",
-                "o<Esc>", "O<Esc>", "A<Esc>", ".", "3.", "<CR>", "<BS>", " ",
+                "o<Esc>", "O<Esc>", "A<Esc>", ".", "3.", "<CR>", "<BS>", " ", "/a<CR>", "?a<CR>",
+                "*", "#", "n", "N", ":2<CR>", "d/a<CR>", "v/a<CR>d",
             ] {
                 for start in 0..=text.len() {
                     // The editor's cursor is never inside a character or
@@ -2501,13 +2899,7 @@ mod tests {
                     if !text.is_char_boundary(start) || clip(text, start) != start {
                         continue;
                     }
-                    let mut editor = Editor {
-                        vim: Vim::default(),
-                        text: text.to_string(),
-                        cursor: start,
-                        selection: start..start,
-                        actions: Vec::new(),
-                    };
+                    let mut editor = Editor::at(text, start);
                     editor.type_keys(spec);
                     assert!(
                         editor.text.is_char_boundary(editor.cursor),

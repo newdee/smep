@@ -16,8 +16,8 @@ use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
-    Copy, Cut, Editor, EditorState, InputEvent, MovePageDown, MovePageUp, Paste, Position, Redo,
-    Replace, RopeExt as _, Search, SelectAll, TextareaState, Undo,
+    Copy, Cut, Editor, EditorState, Input, InputEvent, InputState, MovePageDown, MovePageUp, Paste,
+    Position, Redo, Replace, RopeExt as _, Search, SelectAll, TextareaState, Undo,
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -74,6 +74,15 @@ struct InsertMenu {
     _dismiss: Subscription,
 }
 
+/// Vim's command line while it is open: what it is for, the text typed,
+/// and the editor the command goes back to.
+struct VimPrompt {
+    prompt: vim::Prompt,
+    input: Entity<InputState>,
+    editor: ActiveEditor,
+    _blur: Subscription,
+}
+
 /// The input the user is typing in: the source editor, or the block being
 /// edited in the rendered view. Menus and the "+" work on whichever it is.
 #[derive(Clone)]
@@ -122,10 +131,14 @@ impl ActiveEditor {
                 }
                 vim::Op::PageDown => focus.dispatch_action(&MovePageDown, window, cx),
                 vim::Op::PageUp => focus.dispatch_action(&MovePageUp, window, cx),
-                vim::Op::Find => focus.dispatch_action(&Search, window, cx),
                 vim::Op::Edit { .. } | vim::Op::Cursor(_) | vim::Op::Select(_) => {
                     self.edit_vim(op, window, cx);
                 }
+                // The window's: `Smep::run_vim_commands`.
+                vim::Op::Prompt(_)
+                | vim::Op::Write
+                | vim::Op::Quit { .. }
+                | vim::Op::WriteQuit { .. } => {}
             }
         }
     }
@@ -187,7 +200,7 @@ fn apply_vim_op<M: MultiLineMode>(
         }
         vim::Op::Cursor(at) => state.set_selected_range(*at..*at, cx),
         vim::Op::Select(range) => state.set_selected_range(range.clone(), cx),
-        vim::Op::Undo | vim::Op::Redo | vim::Op::PageDown | vim::Op::PageUp | vim::Op::Find => {}
+        _ => {}
     }
 }
 
@@ -352,6 +365,7 @@ pub struct Smep {
     vim: Vim,
     /// The editor Vim's keys last went to.
     vim_editor: Option<EntityId>,
+    vim_prompt: Option<VimPrompt>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -470,6 +484,7 @@ impl Smep {
             editing: false,
             vim: Vim::default(),
             vim_editor: None,
+            vim_prompt: None,
             _subscriptions: subscriptions,
         };
         this.push_tab(document, window, cx);
@@ -688,6 +703,8 @@ impl Smep {
     /// over (`set_view_mode`).
     fn show_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.insert_menu = None;
+        // A command line belongs to the editor it was opened from.
+        self.close_vim_prompt(false, window, cx);
         if self.editing {
             self.set_view_mode(self.settings.view_mode, window, cx);
         } else {
@@ -888,7 +905,8 @@ impl Smep {
     }
 
     /// Turn Vim mode on (in Normal mode) or off, and remember it.
-    fn toggle_vim(&mut self, _: &ToggleVim, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_vim(&mut self, _: &ToggleVim, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_vim_prompt(false, window, cx);
         self.settings.vim_mode = !self.settings.vim_mode;
         self.vim.reset();
         self.vim_editor = None;
@@ -909,8 +927,34 @@ impl Smep {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The command line: it takes the typing (an input method included);
+        // Vim takes Enter, Escape, and Backspace on an empty line.
+        if let Some(open) = &self.vim_prompt
+            && open.input.focus_handle(cx).is_focused(window)
+        {
+            let empty = open.input.read(cx).value().is_empty();
+            return match vim::Key::from_keystroke(keystroke) {
+                Some(vim::Key::Enter) => {
+                    self.close_vim_prompt(true, window, cx);
+                    true
+                }
+                Some(vim::Key::Escape | vim::Key::Ctrl('[')) => {
+                    self.close_vim_prompt(false, window, cx);
+                    true
+                }
+                Some(vim::Key::Backspace) if empty => {
+                    self.close_vim_prompt(false, window, cx);
+                    true
+                }
+                _ => false,
+            };
+        }
         if !self.vim_active() || self.insert_menu.is_some() {
             return false;
+        }
+        // A message stays on screen until the next key, whoever takes it.
+        if self.vim.clear_message() {
+            cx.notify();
         }
         let Some(key) = vim::Key::from_keystroke(keystroke) else {
             return false;
@@ -933,10 +977,133 @@ impl Smep {
             vim::Outcome::Pass => false,
             vim::Outcome::Handled(ops) => {
                 editor.apply_vim(&ops, window, cx);
+                self.run_vim_commands(&editor, &ops, window, cx);
                 cx.notify();
                 true
             }
         }
+    }
+
+    /// Vim's ops that are the window's, not the editor's: the command line,
+    /// `:w`, `:q`.
+    fn run_vim_commands(
+        &mut self,
+        editor: &ActiveEditor,
+        ops: &[vim::Op],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for op in ops {
+            match *op {
+                vim::Op::Prompt(prompt) => self.open_vim_prompt(prompt, editor.clone(), window, cx),
+                vim::Op::Write => self.vim_write(false, window, cx),
+                vim::Op::Quit { force } => self.vim_quit(self.tab().id, force, window, cx),
+                vim::Op::WriteQuit { if_modified } => {
+                    if if_modified && !self.tab().is_dirty() {
+                        self.vim_quit(self.tab().id, false, window, cx);
+                    } else {
+                        self.vim_write(true, window, cx);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `:w` (and `:wq`, `then_quit`): save the tab on screen, asking for a
+    /// path if it has none, and say so on the status line.
+    fn vim_write(&mut self, then_quit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.tab().id;
+        let saving = self.save_task(id, window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let saved = saving.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !saved {
+                    this.vim.set_message("E: not written");
+                } else if then_quit {
+                    this.vim_quit(id, false, window, cx);
+                } else if let Some(tab) = this.tab_by_id(id) {
+                    let name = Document::display_name(tab.named_path().as_deref());
+                    this.vim.set_message(format!("\"{name}\" written"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `:q`: close tab `id`, refusing while it has unsaved changes unless
+    /// `force` (`:q!`). The last tab closes the window, and smep with it.
+    fn vim_quit(&mut self, id: TabId, force: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tab_by_id(id) else {
+            return;
+        };
+        if !force && tab.is_dirty() {
+            self.vim
+                .set_message("E37: No write since last change (add ! to override)");
+            cx.notify();
+            return;
+        }
+        if self.tabs.len() == 1 {
+            window.remove_window();
+            return;
+        }
+        self.remove_tab(id, window, cx);
+    }
+
+    /// Open Vim's command line for `prompt`, focused, at the foot of the pane.
+    fn open_vim_prompt(
+        &mut self,
+        prompt: vim::Prompt,
+        editor: ActiveEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx));
+        // A click elsewhere closes it, as Escape does.
+        let blur = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, event: &InputEvent, window, cx| {
+                let current = this
+                    .vim_prompt
+                    .as_ref()
+                    .is_some_and(|open| open.input == *input);
+                // Another application coming to the front blurs it too; that
+                // leaves it open, as the focus comes back to it.
+                if matches!(event, InputEvent::Blur) && current && window.is_window_active() {
+                    this.close_vim_prompt(false, window, cx);
+                }
+            },
+        );
+        input.update(cx, |state, cx| state.focus(window, cx));
+        self.vim_prompt = Some(VimPrompt {
+            prompt,
+            input,
+            editor,
+            _blur: blur,
+        });
+        cx.notify();
+    }
+
+    /// Close Vim's command line: run what was typed (`submit`), or drop it.
+    /// The focus goes back to the editor either way.
+    fn close_vim_prompt(&mut self, submit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = self.vim_prompt.take() else {
+            return;
+        };
+        let line = open.input.read(cx).value().to_string();
+        open.editor.focus_handle(cx).focus(window, cx);
+        if submit {
+            let (text, cursor, _) = open.editor.read(cx, |state| state.vim_snapshot());
+            if let vim::Outcome::Handled(ops) = self.vim.submit(&line, &text, cursor) {
+                open.editor.apply_vim(&ops, window, cx);
+                self.run_vim_commands(&open.editor, &ops, window, cx);
+            }
+        } else {
+            self.vim.cancel();
+        }
+        cx.notify();
     }
 
     fn toggle_fullscreen(
@@ -2428,15 +2595,19 @@ impl Smep {
     /// Vim's mode, and the keys of a command being typed, in the corner of
     /// the pane being edited.
     fn render_vim_status(&self, cx: &App) -> Option<AnyElement> {
-        if !self.vim_active() {
+        if !self.vim_active() || self.vim_prompt.is_some() {
             return None;
         }
-        let pending = self.vim.pending_keys();
-        let label = if pending.is_empty() {
-            self.vim.mode().label().to_string()
-        } else {
-            format!("{}  {pending}", self.vim.mode().label())
-        };
+        let mut label = self.vim.mode().label().to_string();
+        for part in [
+            self.vim.pending_keys().as_str(),
+            self.vim.message().unwrap_or(""),
+        ] {
+            if !part.is_empty() {
+                label.push_str("  ");
+                label.push_str(part);
+            }
+        }
         Some(
             div()
                 .debug_selector(|| "vim-status".into())
@@ -2450,6 +2621,35 @@ impl Smep {
                 .font_family(cx.theme().mono_font_family.clone())
                 .text_color(cx.theme().muted_foreground)
                 .child(label)
+                .into_any_element(),
+        )
+    }
+
+    /// Vim's command line along the foot of the pane: `:`, `/` or `?`, then
+    /// what is typed.
+    fn render_vim_prompt(&self, cx: &App) -> Option<AnyElement> {
+        let open = self.vim_prompt.as_ref()?;
+        Some(
+            h_flex()
+                .debug_selector(|| "vim-prompt".into())
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(30.))
+                .px_3()
+                .gap_1()
+                .bg(cx.theme().background)
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_sm()
+                .child(open.prompt.symbol().to_string())
+                .child(
+                    div()
+                        .flex_1()
+                        .child(Input::new(&open.input).appearance(false)),
+                )
                 .into_any_element(),
         )
     }
@@ -2578,6 +2778,7 @@ impl Render for Smep {
         let plus = self.render_plus(window, cx);
         let vim_cursor = self.render_vim_cursor(window, cx);
         let vim_status = self.render_vim_status(cx);
+        let vim_prompt = self.render_vim_prompt(cx);
         let menu = self.render_insert_menu(window, cx);
         let title_bar = self.render_title_bar(cx);
         let tab_bar = self.render_tab_bar(cx);
@@ -2675,7 +2876,8 @@ impl Render for Smep {
                             .min_w_0()
                             .h_full()
                             .child(content)
-                            .children(vim_status),
+                            .children(vim_status)
+                            .children(vim_prompt),
                     ),
                 )
                 .children(plus)
@@ -2692,7 +2894,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use gpui_kit::base::input::{InputBaseState, InputModeKind};
-    use gpui_kit::component::input::{EditorState, Position, TextareaState};
+    use gpui_kit::component::input::{EditorState, InputState, Position, TextareaState};
     use gpui_kit::{
         Entity, Focusable as _, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext,
         point, px,
@@ -5055,6 +5257,184 @@ mod tests {
         cx.update(|window, cx| smep.update(cx, |this, cx| this.set_editing(false, window, cx)));
         cx.simulate_keystrokes("x d d");
         assert_eq!(value(&document, cx), "# Title\n\nara!");
+    }
+
+    fn vim_prompt_input(smep: &Entity<Smep>, cx: &VisualTestContext) -> Option<Entity<InputState>> {
+        cx.read(|cx| {
+            smep.read(cx)
+                .vim_prompt
+                .as_ref()
+                .map(|open| open.input.clone())
+        })
+    }
+
+    fn vim_message(smep: &Entity<Smep>, cx: &VisualTestContext) -> Option<String> {
+        cx.read(|cx| smep.read(cx).vim.message().map(str::to_string))
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_searches_through_its_command_line(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "one 中文 two 中文 two");
+        let editor = editor(&smep, cx);
+
+        // `/` opens the command line, focused; typing goes there, not into
+        // the document; Enter searches.
+        cx.simulate_keystrokes("/");
+        draw(cx);
+        let input = vim_prompt_input(&smep, cx).expect("the command line is open");
+        assert!(cx.update(|window, cx| input.focus_handle(cx).is_focused(window)));
+        assert!(cx.debug_bounds("vim-prompt").is_some());
+        cx.simulate_keystrokes("t w o");
+        assert_eq!(value(&input, cx), "two");
+        assert_eq!(value(&editor, cx), "one 中文 two 中文 two");
+        cx.simulate_keystrokes("enter");
+        assert!(vim_prompt_input(&smep, cx).is_none());
+        assert!(cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window)));
+        assert_eq!(cursor(&editor, cx), "one 中文 ".len());
+        cx.simulate_keystrokes("n");
+        assert_eq!(cursor(&editor, cx), "one 中文 two 中文 ".len());
+        cx.simulate_keystrokes("n");
+        assert_eq!(cursor(&editor, cx), "one 中文 ".len(), "round the end");
+        assert_eq!(
+            vim_message(&smep, cx).as_deref(),
+            Some("search hit BOTTOM, continuing at TOP")
+        );
+
+        // Text from an input method lands in the command line too.
+        cx.simulate_keystrokes("0 /");
+        let input = vim_prompt_input(&smep, cx).expect("open again");
+        type_text(&input, "中文", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(cursor(&editor, cx), "one ".len());
+
+        // Escape drops it; so does Backspace on an empty line.
+        cx.simulate_keystrokes("? x escape");
+        assert!(vim_prompt_input(&smep, cx).is_none());
+        cx.simulate_keystrokes("/ backspace");
+        assert!(vim_prompt_input(&smep, cx).is_none());
+        assert_eq!(cursor(&editor, cx), "one ".len(), "nothing moved");
+        assert_eq!(value(&editor, cx), "one 中文 two 中文 two");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_command_line_closes_when_left(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "abc abc");
+        let editor = editor(&smep, cx);
+        let pending = |cx: &VisualTestContext| cx.read(|cx| smep.read(cx).vim.pending_keys());
+        // Focus and blur events reach an active window only.
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+
+        // Escape drops the command the line was part of: nothing pending.
+        cx.simulate_keystrokes("d /");
+        assert_eq!(pending(cx), "d/");
+        cx.simulate_keystrokes("escape");
+        assert_eq!(pending(cx), "");
+
+        // A click elsewhere (the focus leaving) closes it unrun.
+        cx.simulate_keystrokes("/");
+        let input = vim_prompt_input(&smep, cx).expect("open");
+        type_text(&input, "abc", cx);
+        draw(cx);
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.focus(window, cx)));
+        // Focus changes reach their listeners with the next frame.
+        draw(cx);
+        assert!(vim_prompt_input(&smep, cx).is_none());
+        assert_eq!(pending(cx), "");
+        assert_eq!(cursor(&editor, cx), 0, "not searched");
+
+        // Leaving the editor (here: back to reading) closes it too, even with
+        // the window inactive (a file opened from outside), when no blur comes.
+        cx.simulate_keystrokes(":");
+        assert!(vim_prompt_input(&smep, cx).is_some());
+        draw(cx);
+        cx.deactivate_window();
+        assert!(
+            vim_prompt_input(&smep, cx).is_some(),
+            "another application in front leaves it open"
+        );
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.set_editing(false, window, cx)));
+        assert!(vim_prompt_input(&smep, cx).is_none());
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_writes_and_quits_with_ex_commands(cx: &mut TestAppContext) {
+        let dir = TempDir::new("vim-ex");
+        let first = dir.path("first.md");
+        let second = dir.path("second.md");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        let (smep, cx) = open_with(
+            cx,
+            Document {
+                path: Some(first.clone()),
+                text: "first".into(),
+                format: PreviewFormat::Markdown,
+                origin: None,
+            },
+            Settings {
+                vim_mode: true,
+                ..Settings::default()
+            },
+        );
+        draw(cx);
+        let count = |cx: &VisualTestContext| cx.read(|cx| smep.read(cx).tab_count());
+
+        // `:w` saves and says so.
+        cx.simulate_keystrokes("x : w enter");
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "irst");
+        assert!(!dirty(&smep, cx));
+        assert_eq!(
+            vim_message(&smep, cx).as_deref(),
+            Some("\"first.md\" written")
+        );
+        // Gone with the next key, even one that is the window's shortcut.
+        cx.simulate_keystrokes(&primary("shift-l"));
+        assert_eq!(vim_message(&smep, cx), None);
+
+        // Two tabs: `:q` refuses while there are changes, `:q!` does not.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.add_documents(
+                    vec![Document {
+                        path: Some(second.clone()),
+                        text: "second".into(),
+                        format: PreviewFormat::Markdown,
+                        origin: None,
+                    }],
+                    window,
+                    cx,
+                );
+                this.activate(1, window, cx);
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("x : q enter");
+        assert_eq!(count(cx), 2);
+        assert_eq!(
+            vim_message(&smep, cx).as_deref(),
+            Some("E37: No write since last change (add ! to override)")
+        );
+        // (The test platform types no `!` for Shift+1: the line is set.)
+        cx.simulate_keystrokes(":");
+        let input = vim_prompt_input(&smep, cx).expect("the command line is open");
+        type_text(&input, "q!", cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(count(cx), 1);
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "second",
+            "discarded"
+        );
+
+        // `:wq` writes, then closes; here it is the last tab, so the window.
+        draw(cx);
+        cx.simulate_keystrokes("x : w q enter");
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "rst");
+        assert!(cx.windows().is_empty(), "the last tab closed the window");
     }
 
     #[test]
