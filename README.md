@@ -14,8 +14,10 @@ place, block by block.
 
 ## Status
 
-`0.1.19` is the twentieth release: Vim mode shifts lines with `>` and
-`<` and highlights the last search's matches until `:noh`. 0.1.18 gave it
+`0.1.20` is the twenty-first release: Vim mode substitutes with `:s` over
+ranges (`:%s`, `:'<,'>s`), changes options with `:set`, and its searches
+take Vim's patterns. 0.1.19 let it shift lines with `>` and `<` and
+highlight the last search's matches until `:noh`. 0.1.18 gave it
 its command line, `:w`, `:q`, `:q!`, `:wq`, `:x`, and searches with `/`,
 `?`, `n`, `N`, `*` and `#`. 0.1.17 brought Vim mode (Edit, Vim Mode), which gives the
 editor and the rendered view's block editors Normal, Insert and Visual

@@ -21,7 +21,7 @@ The request: "把 :s 替换和 :set 也加上". Asked and answered before buildi
 | D | static: clippy, README's 15 claims, dev.md | 0 warnings | dev.md still said an empty match "steps over a CRLF whole" after that code was removed → corrected |
 | 1 (clean) | static: fmt 0 lines; clippy `-D warnings` 0 (default and `--no-default-features`); README and dev.md against the code; no dead code left | 193 + 5, slim 183 + 5 | none |
 | 2 (clean) | reproducibility: the suite 3 times | 193 + 5 each time, 0 failed | none |
-| 3 (clean) | the other platforms: CI | pending | |
+| 3 (clean) | the other platforms: CI run 43799911734 for `e0afe0e`: ubuntu 5 m 27 s (194 + 4), macos 4 m 0 s (192 + 4), windows 11 m 51 s (193 + 5), 0 failed | clean | none |
 
 Tests: `pattern.rs` 7 (translation, very magic / no magic, errors, matches incl. CRLF and CJK, case rules, escape round trip, replacements), `ex.rs` 3 (ranges, `:s` arguments, `:set`), engine 4 new (searches with patterns, `:s` over ranges incl. CRLF and Visual `'<,'>`, flags / repeats / errors, `:set`), the degenerate sweep with 11 more commands, the 2 MB test with `:%s/a/A/g` (187,245 substitutions, 167 ms debug, result checked against `str::replace`); app 2 new (`:s` with undo, the Visual prefill and caret, highlight, errors, Escape after `:`; `:set nu nowrap sw=4` measured on the laid-out editor, Tab in a new tab, Vim switched off and on).
 
