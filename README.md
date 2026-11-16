@@ -14,9 +14,10 @@ place, block by block.
 
 ## Status
 
-`0.1.18` is the nineteenth release: Vim mode gets its command line,
-`:w`, `:q`, `:q!`, `:wq`, `:x`, and searches with `/`, `?`, `n`, `N`, `*`
-and `#`. 0.1.17 brought Vim mode (Edit, Vim Mode), which gives the
+`0.1.19` is the twentieth release: Vim mode shifts lines with `>` and
+`<` and highlights the last search's matches until `:noh`. 0.1.18 gave it
+its command line, `:w`, `:q`, `:q!`, `:wq`, `:x`, and searches with `/`,
+`?`, `n`, `N`, `*` and `#`. 0.1.17 brought Vim mode (Edit, Vim Mode), which gives the
 editor and the rendered view's block editors Normal, Insert and Visual
 modes, with counts, operators, text objects, `.` and a block cursor. 0.1.16
 let the outline fold a section by the triangle before it and list headings
