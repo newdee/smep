@@ -42,6 +42,9 @@ gpui-kit = "0.8"
 htmd = "0.5"
 interprocess = "2"
 markdown = "1"
+# Vim mode's patterns (`/`, `:s`), translated from Vim's syntax; already in
+# the dependency tree through gpui-base. 1.10 for `\b{start}` / `\b{end}`.
+regex = "1.10"
 pdf-inspector = { version = "1.25", optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "1"

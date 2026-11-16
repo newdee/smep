@@ -272,9 +272,9 @@ foot of the pane (`Smep::vim_prompt`), so an input method and paste work
 in it: the engine answers `Op::Prompt` and keeps the command half typed
 (`d/` waits for its search); the interceptor takes Enter, Escape and
 Backspace-on-empty while the line has the focus, and lets the rest type;
-`Vim::submit` (or `Vim::cancel`) finishes the command. Searches are literal
-and case-sensitive (`find_match`, wrapping round); `.` repeats `d/foo` as
-`dn`. Ex commands come back as `Op::Write` / `Op::Quit` / `Op::WriteQuit`,
+`Vim::submit` (or `Vim::cancel`) finishes the command; `.` repeats `d/foo` as
+`dn`. Typed in Visual mode, `:` ends Visual mode (keeping `'<` `'>`) and the line
+starts with `Vim::prompt_text` (`'<,'>`). Ex commands come back as `Op::Write` / `Op::Quit` / `Op::WriteQuit`,
 which `Smep::run_vim_commands` carries out with `save_task` and
 `remove_tab` (`:q` on the last tab removes the window, and smep quits).
 A click elsewhere in the window (a blur while the window is active) or a
@@ -283,8 +283,9 @@ to the front leaves it open. Messages (`Vim::message`) go with the next
 keystroke, whoever takes it.
 
 `>` and `<` are operators that always take whole lines (`Vim::shift`):
-the indent is rebuilt in spaces, `vim::SHIFT_WIDTH` (2) a step, the same as
-the editor's Tab (gpui's `TabSize` default; a test types both and compares).
+the indent is rebuilt in spaces, 'shiftwidth' a step (`vim::SHIFT_WIDTH`, 2, by
+default: gpui's `TabSize` default), the same as the editor's Tab, which
+`:set sw` changes too (a test types both and compares).
 The shift is one edit, trimmed to the span from the first indent changed to
 the last, so it is one undo step.
 
@@ -300,6 +301,33 @@ matches: about 0.1 s in a debug build). Only the tab on screen holds marks.
 marks the tab unhighlighted. Block editors are `TextareaState`, which has no
 range decorations: they get no highlight.
 
+Patterns (`src/vim/pattern.rs`): `Pattern::new` translates Vim's syntax
+(magic, `\v`, `\M` / `\V`, `\c` / `\C`) to the `regex` crate's and compiles
+it with `multi_line` and `crlf`, so `^` / `$` are line anchors and `$` stops
+before `\r\n`; `.` matches no line break, `\n` is `\r?\n`, `\<` `\>` are
+`\b{start}` `\b{end}`. What the crate cannot do (back references, `\zs`,
+look-around) is an error, never a silent change of meaning. 'ignorecase' and
+'smartcase' pick the case; `*` and `#` escape the word (`pattern::escape`),
+skip 'smartcase' and keep the old whole-word check (`is_whole_word`, Vim's
+word classes, CJK apart), not `\<\>`. A `:set ic` recompiles the last search,
+so `n` and the highlight follow it. `expand` builds a replacement from a
+match's captures; `with_previous` puts in `~`.
+
+Ex lines (`src/vim/ex.rs`): `parse_range` reads `%`, `.`, `$`, `N`, `'<`,
+`'>`, `+N` / `-N`, `,` / `;` (a backwards range is swapped); `parse_substitute`
+the delimiter, pattern, replacement and flags; `Options::set` every `:set`
+form, stopping at the first error. `Vim::substitute` walks the matches from
+the range's first line start (only those starting in the range; one per line
+without `g`; an empty match right after a match skipped, as Vim does; never a
+match that starts or ends inside a CRLF, an empty one between its `\r` and
+`\n` included), builds the
+new text of the lines and answers one edit trimmed to the changed span, so
+`u` takes it back at once. `:set` answers `Op::Options` when 'number',
+'wrap' or 'shiftwidth' changed; `Smep::apply_editor_options` (`show_options`)
+sets them on every tab's editor (`set_line_number`, `set_soft_wrap`,
+`set_tab_size`), on new tabs, and back to smep's defaults while Vim mode is
+off. A block editor's Tab types a tab character whatever its `TabSize`, so
+it is left alone.
 `ActiveEditor::apply_vim` makes the edits with `set_selected_range` +
 `replace` (each one an undo step) and runs the actions through the editor's
 own focus handle (`FocusHandle::dispatch_action`, synchronous); after an

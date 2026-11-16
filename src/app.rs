@@ -12,7 +12,8 @@ use std::time::Duration;
 // need. Without a style it renders with the defaults the component theme
 // installs, so the "System" theme looks exactly as before.
 use gpui_kit::base::input::{
-    InputBaseState, MultiLineMode, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle,
+    InputBaseState, MultiLineMode, RangeDecoration, RangeDecorationCollection,
+    RangeDecorationStyle, TabSize,
 };
 use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
@@ -140,7 +141,8 @@ impl ActiveEditor {
                 vim::Op::Prompt(_)
                 | vim::Op::Write
                 | vim::Op::Quit { .. }
-                | vim::Op::WriteQuit { .. } => {}
+                | vim::Op::WriteQuit { .. }
+                | vim::Op::Options => {}
             }
         }
     }
@@ -183,6 +185,27 @@ impl ActiveEditor {
             }),
         }
     }
+}
+
+/// Show a source editor with Vim's options: line numbers, wrapping, and the
+/// Tab indent ('shiftwidth').
+fn show_options(
+    editor: &Entity<EditorState>,
+    options: &vim::Options,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    editor.update(cx, |state, cx| {
+        state.set_line_number(options.number, window, cx);
+        state.set_soft_wrap(options.wrap, window, cx);
+        state.set_tab_size(
+            TabSize {
+                tab_size: options.shiftwidth,
+                hard_tabs: false,
+            },
+            cx,
+        );
+    });
 }
 
 /// Make one of Vim mode's edits or moves.
@@ -529,6 +552,11 @@ impl Smep {
         editor.update(cx, |state, cx| {
             state.set_highlighter_factory(highlight::factory(), cx);
         });
+        // A tab opened after `:set nu` shows the numbers too.
+        let options = self.editor_options();
+        if options != vim::Options::default() {
+            show_options(&editor, &options, window, cx);
+        }
         let preview = cx.new(|cx| preview_state(document.format, &document.text, cx));
         let rendered = cx.new(|cx| RenderedView::new(editor.clone(), document.format, window, cx));
         // Only the tab on screen while editing has a writable rendered view
@@ -967,6 +995,10 @@ impl Smep {
         self.vim_editor = None;
         self.save_settings();
         self.sync_search_marks(None, cx);
+        // `:set` options show while Vim mode is on, and come back with it.
+        if *self.vim.options() != vim::Options::default() {
+            self.apply_editor_options(window, cx);
+        }
         cx.notify();
     }
 
@@ -1062,8 +1094,27 @@ impl Smep {
                         self.vim_write(true, window, cx);
                     }
                 }
+                vim::Op::Options => self.apply_editor_options(window, cx),
                 _ => {}
             }
+        }
+    }
+
+    /// The options the editors show: Vim's (`:set number`, `wrap`,
+    /// `shiftwidth`) while Vim mode is on, smep's own look otherwise.
+    fn editor_options(&self) -> vim::Options {
+        if self.settings.vim_mode {
+            self.vim.options().clone()
+        } else {
+            vim::Options::default()
+        }
+    }
+
+    /// Show every tab's editor with [`Self::editor_options`].
+    fn apply_editor_options(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let options = self.editor_options();
+        for tab in &self.tabs {
+            show_options(&tab.editor, &options, window, cx);
         }
     }
 
@@ -1133,7 +1184,14 @@ impl Smep {
                 }
             },
         );
-        input.update(cx, |state, cx| state.focus(window, cx));
+        // From Visual mode: `'<,'>`, the caret after it.
+        let start = self.vim.prompt_text();
+        input.update(cx, |state, cx| {
+            if !start.is_empty() {
+                state.set_value(start, window, cx);
+            }
+            state.focus(window, cx);
+        });
         self.vim_prompt = Some(VimPrompt {
             prompt,
             input,
@@ -4435,7 +4493,7 @@ mod tests {
         draw(cx);
         cx.simulate_keystrokes(&primary("t"));
         assert_eq!(tabs(&smep, cx), (2, 1));
-        let second = editor(&smep, cx);
+        let second = cx.read(|cx| smep.read(cx).tab().editor.clone());
         assert_eq!(value(&second, cx), "");
         type_text(&second, "two", cx);
         draw(cx);
@@ -5461,6 +5519,113 @@ mod tests {
         cx.dispatch_action(crate::keymap::ToggleVim);
         assert_eq!(search_marks(&smep, 0, cx), bars);
         draw(cx);
+    }
+
+    /// Run an Ex command through the command line, typed as an input
+    /// method would type it (the test platform shifts no `$` or `=`).
+    fn ex_command(smep: &Entity<Smep>, command: &str, cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes(":");
+        let input = vim_prompt_input(smep, cx).expect("the command line");
+        type_text(&input, command, cx);
+        cx.simulate_keystrokes("enter");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_substitutes_over_ex_ranges(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "a a\nb b\nc");
+        let editor = editor(&smep, cx);
+        cx.simulate_keystrokes(": s / a / x / g enter");
+        assert_eq!(value(&editor, cx), "x x\nb b\nc");
+        cx.simulate_keystrokes("u");
+        assert_eq!(value(&editor, cx), "a a\nb b\nc", "one undo step");
+
+        // From Visual mode the line starts with `'<,'>`, the caret after it.
+        cx.simulate_keystrokes("j shift-v j :");
+        let input = vim_prompt_input(&smep, cx).expect("open");
+        assert_eq!(value(&input, cx), "'<,'>");
+        cx.simulate_keystrokes("s");
+        assert_eq!(value(&input, cx), "'<,'>s");
+        type_text(&input, "'<,'>s/.$/!/", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(value(&editor, cx), "a a\nb !\n!");
+        assert_eq!(vim_mode(&smep, cx), crate::vim::Mode::Normal);
+        let (start, end) = cx.read(|cx| {
+            let range = editor.read(cx).selected_range();
+            (range.start, range.end)
+        });
+        assert_eq!(start, end, "the selection ended with Visual mode");
+        // The pattern is the last search: highlighted.
+        assert_eq!(search_marks(&smep, 0, cx), [2..3, 6..7, 8..9]);
+
+        // Errors show, and change nothing.
+        ex_command(&smep, "%s/zzz/y/", cx);
+        assert_eq!(
+            vim_message(&smep, cx).as_deref(),
+            Some("E486: Pattern not found: zzz")
+        );
+        assert_eq!(value(&editor, cx), "a a\nb !\n!");
+
+        // `:` from Visual mode, then Escape: the selection is gone too, or
+        // the next key would take it for a mouse selection.
+        cx.simulate_keystrokes("g g v l : escape");
+        let (start, end) = cx.read(|cx| {
+            let range = editor.read(cx).selected_range();
+            (range.start, range.end)
+        });
+        assert_eq!(start, end);
+        cx.simulate_keystrokes("x");
+        assert_eq!(
+            value(&editor, cx),
+            "aa\nb !\n!",
+            "one character, as Normal mode"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_set_shows_in_the_editors(cx: &mut TestAppContext) {
+        let long = "word ".repeat(300);
+        let (smep, cx) = open_vim(cx, &format!("a\n{long}"));
+        let editor = editor(&smep, cx);
+        let top = |at: usize, cx: &VisualTestContext| {
+            cx.read(|cx| editor.read(cx).range_to_bounds(&(at..at)).map(|b| b.top()))
+        };
+        let left = |cx: &VisualTestContext| {
+            cx.read(|cx| editor.read(cx).range_to_bounds(&(0..0)).map(|b| b.left()))
+        };
+        // Two places 400 bytes apart on the long line: on one row unwrapped.
+        let wrapped = |cx: &VisualTestContext| {
+            let line = value(&editor, cx).find('\n').expect("two lines") + 1;
+            top(line + 400, cx) != top(line, cx)
+        };
+        draw(cx);
+        let plain = left(cx);
+        assert!(wrapped(cx), "smep wraps long lines");
+
+        // 'number' and 'wrap' show at once.
+        ex_command(&smep, "set nu nowrap", cx);
+        draw(cx);
+        assert!(left(cx) > plain, "the numbers push the text right");
+        assert!(!wrapped(cx));
+
+        // 'shiftwidth': `>` and Tab both, in a tab opened later too.
+        ex_command(&smep, "set sw=4", cx);
+        cx.simulate_keystrokes("g g > > j 0 i tab escape");
+        assert!(value(&editor, cx).starts_with("    a\n    word"));
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.new_tab(window, cx)));
+        let second = cx.read(|cx| smep.read(cx).tab().editor.clone());
+        cx.simulate_keystrokes("i tab escape");
+        assert_eq!(value(&second, cx), "    ");
+
+        // Vim mode off: smep's own look; on again: the options are back.
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.activate(0, window, cx)));
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        draw(cx);
+        assert_eq!(left(cx), plain);
+        assert!(wrapped(cx));
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        draw(cx);
+        assert!(left(cx) > plain);
+        assert!(!wrapped(cx));
     }
 
     #[gpui_kit::test]

@@ -14,6 +14,12 @@ use std::ops::Range;
 
 use gpui_kit::Keystroke;
 
+mod ex;
+mod pattern;
+
+pub use ex::Options;
+use pattern::{CaseRule, Pattern};
+
 /// The modes, as Vim names them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -159,6 +165,9 @@ pub enum Op {
     WriteQuit {
         if_modified: bool,
     },
+    /// `:set` changed an option the editors show ('number', 'wrap',
+    /// 'shiftwidth'): see [`Vim::options`].
+    Options,
 }
 
 /// What the command line is for.
@@ -186,37 +195,56 @@ impl Prompt {
 /// The last search, which `n` and `N` repeat.
 #[derive(Clone, Debug)]
 struct Search {
-    /// Literal text, matched case for case.
-    pattern: String,
+    pattern: Pattern,
     forward: bool,
-    /// `*` and `#`: whole words only.
+    /// `*` and `#`: whole words only, as Vim's word classes have them.
     whole: bool,
+    /// 'smartcase' applies (not for `*` and `#`, as in Vim).
+    smart: bool,
+}
+
+impl Search {
+    /// Whether the match `found` counts.
+    fn accepts(&self, text: &str, found: &regex::Match<'_>) -> bool {
+        !self.whole || is_whole_word(text, found.start(), found.as_str())
+    }
 }
 
 /// The search whose matches are highlighted ('hlsearch'): the last one,
 /// until `:noh`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Highlight {
-    pattern: String,
+    pattern: Pattern,
     whole: bool,
 }
 
 impl Highlight {
-    /// Every match in `text`, in order, none overlapping.
+    /// Every match in `text`, in order, none overlapping; an empty match
+    /// (`^`) shows nothing.
     pub fn matches(&self, text: &str) -> Vec<Range<usize>> {
-        if self.pattern.is_empty() {
-            return Vec::new();
-        }
-        text.match_indices(self.pattern.as_str())
-            .map(|(ix, _)| ix)
-            .filter(|&ix| !self.whole || is_whole_word(text, ix, &self.pattern))
-            .map(|ix| ix..ix + self.pattern.len())
+        self.pattern
+            .regex()
+            .find_iter(text)
+            .filter(|found| {
+                !found.is_empty()
+                    && (!self.whole || is_whole_word(text, found.start(), found.as_str()))
+            })
+            .map(|found| found.range())
             .collect()
     }
 }
 
-/// How many columns `>` and `<` shift a line by: the editor's own Tab
-/// indent (gpui's `TabSize` default, two spaces), so the two agree.
+/// The last `:s`, which `:s` alone and `:&&` repeat.
+#[derive(Clone, Debug)]
+struct LastSubstitute {
+    pattern: String,
+    replacement: String,
+    flags: ex::Flags,
+}
+
+/// The default 'shiftwidth', the columns `>` and `<` shift a line by: the
+/// editor's own Tab indent (gpui's `TabSize` default, two spaces), so the
+/// two agree (`:set sw` changes both).
 pub const SHIFT_WIDTH: usize = 2;
 
 /// The most shift widths one `>` or `<` makes (`99999>` in Visual mode
@@ -408,8 +436,8 @@ enum Step {
     More,
     /// The command is complete. `bool`: it changed the text (for `.`).
     Done(Vec<Op>, bool),
-    /// The command goes on in the command line.
-    Prompt(Prompt),
+    /// The command goes on in the command line, after the ops.
+    Prompt(Prompt, Vec<Op>),
     /// Not Vim's.
     Pass,
 }
@@ -458,8 +486,16 @@ pub struct Vim {
     prompt: Option<Prompt>,
     last_search: Option<Search>,
     /// Whether the last search's matches are highlighted: from the next
-    /// search (`/`, `?`, `n`, `N`, `*`, `#`) until `:noh`.
+    /// search (`/`, `?`, `n`, `N`, `*`, `#`, `:s`) until `:noh`.
     highlighting: bool,
+    options: Options,
+    last_substitute: Option<LastSubstitute>,
+    /// The last `:s` replacement, which `~` stands for.
+    previous_replacement: Option<String>,
+    /// `'<` and `'>`: where the last Visual selection started and ended.
+    visual_marks: Option<(usize, usize)>,
+    /// The text the open command line starts with: `'<,'>` from Visual mode.
+    prompt_text: &'static str,
     /// What Vim says on the status line until the next key: an error, a
     /// search wrapping round.
     message: Option<String>,
@@ -476,11 +512,47 @@ impl Vim {
 
     /// The search to highlight the matches of, if any.
     pub fn highlight(&self) -> Option<Highlight> {
-        let search = self.last_search.as_ref().filter(|_| self.highlighting)?;
+        let search = self
+            .last_search
+            .as_ref()
+            .filter(|_| self.highlighting && self.options.hlsearch)?;
         Some(Highlight {
             pattern: search.pattern.clone(),
             whole: search.whole,
         })
+    }
+
+    /// The options `:set` changes.
+    pub fn options(&self) -> &Options {
+        &self.options
+    }
+
+    /// What the command line opened last starts with: `'<,'>` when `:` was
+    /// typed in Visual mode, else nothing.
+    pub fn prompt_text(&self) -> &'static str {
+        self.prompt_text
+    }
+
+    fn case_rule(&self, smart: bool) -> CaseRule {
+        CaseRule {
+            ignorecase: self.options.ignorecase,
+            smartcase: smart && self.options.smartcase,
+        }
+    }
+
+    /// Compile a search pattern under the options; a bad one says why.
+    fn compile(&mut self, source: &str, smart: bool) -> Option<Pattern> {
+        match Pattern::new(
+            source,
+            self.case_rule(smart),
+            self.previous_replacement.as_deref(),
+        ) {
+            Ok(pattern) => Some(pattern),
+            Err(message) => {
+                self.message = Some(message);
+                None
+            }
+        }
     }
 
     /// Say something on the status line until the next key.
@@ -510,16 +582,30 @@ impl Vim {
             Prompt::Command => self.ex(line, text, cur),
             Prompt::SearchForward | Prompt::SearchBackward => {
                 let forward = prompt == Prompt::SearchForward;
-                if line.is_empty() {
-                    // `/` alone searches for the last text again.
+                // `/foo/` ends at the second `/`; an offset after it is not
+                // supported.
+                let (source, offset) = split_search(line, prompt.symbol());
+                if !offset.is_empty() {
+                    self.message = Some(format!(
+                        "E: search offsets are not supported: {}{offset}",
+                        prompt.symbol()
+                    ));
+                    return self.finish(abort(), visual);
+                }
+                if source.is_empty() {
+                    // `/` alone searches for the last pattern again.
                     if let Some(search) = &mut self.last_search {
                         search.forward = forward;
                     }
                 } else {
+                    let Some(pattern) = self.compile(source, true) else {
+                        return self.finish(abort(), visual);
+                    };
                     self.last_search = Some(Search {
-                        pattern: line.to_string(),
+                        pattern,
                         forward,
                         whole: false,
+                        smart: true,
                     });
                 }
                 // For `.`, the search stands as `n`: `d/foo` repeats as `dn`.
@@ -578,6 +664,7 @@ impl Vim {
     pub fn key(&mut self, key: Key, text: &str, cursor: usize, selection: Range<usize>) -> Outcome {
         let cursor = clip(text, cursor);
         self.message = None;
+        self.prompt_text = "";
         // A key for the editor while the command line was open: it closed.
         self.cancel();
         match self.mode {
@@ -654,9 +741,10 @@ impl Vim {
     fn finish(&mut self, step: Step, visual: bool) -> Outcome {
         match step {
             Step::More => Outcome::Handled(Vec::new()),
-            Step::Prompt(prompt) => {
+            Step::Prompt(prompt, mut ops) => {
                 self.prompt = Some(prompt);
-                Outcome::Handled(vec![Op::Prompt(prompt)])
+                ops.push(Op::Prompt(prompt));
+                Outcome::Handled(ops)
             }
             Step::Pass => {
                 self.end_command();
@@ -768,9 +856,16 @@ impl Vim {
                 self.pending = Some(Pending::G);
                 return Step::More;
             }
-            '/' => return Step::Prompt(Prompt::SearchForward),
-            '?' => return Step::Prompt(Prompt::SearchBackward),
-            ':' if !visual && self.operator.is_none() => return Step::Prompt(Prompt::Command),
+            '/' => return Step::Prompt(Prompt::SearchForward, Vec::new()),
+            '?' => return Step::Prompt(Prompt::SearchBackward, Vec::new()),
+            // From Visual mode the line starts with the selection's lines.
+            ':' if visual => {
+                let to = clamp_normal(text, self.head);
+                self.leave_visual();
+                self.prompt_text = "'<,'>";
+                return Step::Prompt(Prompt::Command, vec![Op::Cursor(to)]);
+            }
+            ':' if self.operator.is_none() => return Step::Prompt(Prompt::Command, Vec::new()),
             'n' | 'N' => {
                 return self.motion(Motion::SearchNext { reverse: c == 'N' }, text, cur);
             }
@@ -782,10 +877,14 @@ impl Vim {
                     self.message = Some("E348: No string under cursor".into());
                     return abort();
                 };
+                let Some(pattern) = self.compile(&pattern::escape(&text[range]), false) else {
+                    return abort();
+                };
                 self.last_search = Some(Search {
-                    pattern: text[range].to_string(),
+                    pattern,
                     forward: c == '*',
                     whole: true,
+                    smart: false,
                 });
                 return self.motion(Motion::SearchNext { reverse: false }, text, cur);
             }
@@ -829,8 +928,7 @@ impl Vim {
 
     fn escape(&mut self, text: &str) -> Step {
         if self.mode.is_visual() {
-            self.mode = Mode::Normal;
-            self.shown = 0..0;
+            self.leave_visual();
             return done(vec![Op::Cursor(clamp_normal(text, self.head))]);
         }
         if self.operator.is_some() || self.count.is_some() {
@@ -1168,9 +1266,25 @@ impl Vim {
                 let forward = search.forward != reverse;
                 let mut at = cur;
                 let mut wrapped = false;
+                let wrapscan = self.options.wrapscan;
                 for _ in 0..count {
-                    let Some((found, wrap)) = find_match(text, at, &search, forward) else {
-                        self.message = Some(format!("E486: Pattern not found: {}", search.pattern));
+                    let Some((found, wrap)) = find_match(text, at, &search, forward, wrapscan)
+                    else {
+                        let source = search.pattern.source();
+                        let elsewhere = search
+                            .pattern
+                            .regex()
+                            .find_iter(text)
+                            .any(|found| search.accepts(text, &found));
+                        self.message = Some(match (elsewhere, forward) {
+                            (false, _) => format!("E486: Pattern not found: {source}"),
+                            (true, true) => {
+                                format!("E385: Search hit BOTTOM without match for: {source}")
+                            }
+                            (true, false) => {
+                                format!("E384: Search hit TOP without match for: {source}")
+                            }
+                        });
                         return None;
                     };
                     at = found;
@@ -1289,7 +1403,8 @@ impl Vim {
     /// empty. The cursor goes to the first line's first non-blank.
     fn shift(&mut self, left: bool, a: usize, b: usize, times: usize, text: &str) -> Step {
         let (first, last) = (line_start(text, a.min(b)), line_end(text, a.max(b)));
-        let by = SHIFT_WIDTH * times.min(MAX_SHIFTS);
+        let step = self.options.shiftwidth;
+        let by = step * times.min(MAX_SHIFTS);
         let mut shifted = String::with_capacity(last - first);
         let mut lines = 0usize;
         let mut start = first;
@@ -1300,7 +1415,7 @@ impl Vim {
                 let body = first_non_blank(text, start);
                 let width: usize = text[start..body]
                     .chars()
-                    .map(|c| if c == '\t' { SHIFT_WIDTH } else { 1 })
+                    .map(|c| if c == '\t' { step } else { 1 })
                     .sum();
                 let width = if left {
                     width.saturating_sub(by)
@@ -1407,45 +1522,297 @@ impl Vim {
         changed(ops)
     }
 
-    /// An Ex command from the command line: `:w`, `:q`, `:q!`, `:wq`, `:x`,
-    /// `:12`, `:$`.
+    /// An Ex command from the command line, after its range, if any:
+    /// `:w`, `:q`, `:q!`, `:wq`, `:x`, `:12`, `:$`, `:s`, `:&&`, `:set`,
+    /// `:noh`.
     fn ex(&mut self, line: &str, text: &str, cur: usize) -> Step {
-        let command = line.trim().trim_start_matches(':').trim();
-        match command {
-            "" => done(Vec::new()),
+        let marks = self.visual_marks.map(|(a, b)| {
+            (
+                line_number(text, clip(text, a)),
+                line_number(text, clip(text, b)),
+            )
+        });
+        let lines = ex::Lines {
+            current: line_number(text, cur),
+            last: line_number(text, text.len()),
+            marks,
+        };
+        let (range, rest) = match ex::parse_range(line.trim(), &lines) {
+            Ok(parsed) => parsed,
+            Err(message) => return self.fail(message),
+        };
+        let command = rest.trim();
+        let name_len = command
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(command.len());
+        let (name, args) = command.split_at(name_len);
+        let abbreviates = |full: &str, min: usize| name.len() >= min && full.starts_with(name);
+        match name {
+            "" if command.is_empty() => match range {
+                // `:12`, `:$`, `:'>`: to the range's last line.
+                Some((_, last)) => {
+                    self.count = Some(last.max(1));
+                    self.motion(Motion::FirstLine, text, cur)
+                }
+                None => done(Vec::new()),
+            },
+            // `:&`, `:&&`: the last `:s` again.
+            "" if command.starts_with('&') => self.substitute(range, &command[1..], text, cur),
+            _ if abbreviates("substitute", 1) => self.substitute(range, args, text, cur),
+            _ if range.is_some() => self.fail("E481: No range allowed".into()),
+            _ if abbreviates("set", 2) => self.set(args),
             // `:noh` to `:nohlsearch`, as Vim abbreviates it.
-            _ if command.len() >= 3 && "nohlsearch".starts_with(command) => {
+            _ if abbreviates("nohlsearch", 3) && args.trim().is_empty() => {
                 self.highlighting = false;
                 done(Vec::new())
             }
-            "w" | "w!" | "write" | "write!" => done(vec![Op::Write]),
-            "q" | "quit" | "clo" | "close" => done(vec![Op::Quit { force: false }]),
-            "q!" | "quit!" | "clo!" | "close!" => done(vec![Op::Quit { force: true }]),
-            "wq" | "wq!" => done(vec![Op::WriteQuit { if_modified: false }]),
-            "x" | "x!" | "xit" | "exit" => done(vec![Op::WriteQuit { if_modified: true }]),
-            "$" => self.motion(Motion::LastLine, text, cur),
-            _ if command.bytes().all(|b| b.is_ascii_digit()) => {
-                self.count = Some(
-                    command
-                        .parse::<usize>()
-                        .unwrap_or(usize::MAX)
-                        .clamp(1, 99_999),
-                );
-                self.motion(Motion::FirstLine, text, cur)
-            }
-            _ if command.starts_with("w ") || command.starts_with("write ") => {
-                self.message = Some(
+            _ => match command {
+                "w" | "w!" | "write" | "write!" => done(vec![Op::Write]),
+                "q" | "quit" | "clo" | "close" => done(vec![Op::Quit { force: false }]),
+                "q!" | "quit!" | "clo!" | "close!" => done(vec![Op::Quit { force: true }]),
+                "wq" | "wq!" => done(vec![Op::WriteQuit { if_modified: false }]),
+                "x" | "x!" | "xit" | "exit" => done(vec![Op::WriteQuit { if_modified: true }]),
+                _ if command.starts_with("w ") || command.starts_with("write ") => self.fail(
                     "E: :w writes the document's own file; File, Save As saves it elsewhere".into(),
-                );
-                abort()
-            }
-            _ => {
-                self.message = Some(format!("E492: Not an editor command: {command}"));
-                abort()
-            }
+                ),
+                _ => self.fail(format!("E492: Not an editor command: {command}")),
+            },
         }
     }
 
+    fn fail(&mut self, message: String) -> Step {
+        self.message = Some(message);
+        abort()
+    }
+
+    /// `:set`: change the options, say what was asked, and tell the editors
+    /// when one they show changed.
+    fn set(&mut self, args: &str) -> Step {
+        let before = self.options.clone();
+        let result = self.options.set(args);
+        let after = self.options.clone();
+        if (after.ignorecase, after.smartcase) != (before.ignorecase, before.smartcase)
+            && let Some(search) = &self.last_search
+        {
+            // The last search matches under the new case rule (and so does
+            // its highlight).
+            let rule = self.case_rule(search.smart);
+            if let Ok(pattern) = Pattern::new(
+                search.pattern.source(),
+                rule,
+                self.previous_replacement.as_deref(),
+            ) && let Some(search) = &mut self.last_search
+            {
+                search.pattern = pattern;
+            }
+        }
+        if after.hlsearch && !before.hlsearch {
+            self.highlighting = true;
+        }
+        self.message = match result {
+            Ok(said) => said,
+            Err(message) => Some(message),
+        };
+        let shown = |o: &Options| (o.number, o.wrap, o.shiftwidth);
+        done(if shown(&after) != shown(&before) {
+            vec![Op::Options]
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// `:s` (and `:&`, `:&&`) over `range`, the cursor's line without one.
+    fn substitute(
+        &mut self,
+        range: Option<(usize, usize)>,
+        args: &str,
+        text: &str,
+        cur: usize,
+    ) -> Step {
+        let parsed = match ex::parse_substitute(args) {
+            Ok(parsed) => parsed,
+            Err(message) => return self.fail(message),
+        };
+        let (source, replacement, flags) = match parsed {
+            ex::Substitute::New {
+                pattern,
+                replacement,
+                flags,
+            } => {
+                // An empty pattern is the last search's.
+                let source = if pattern.is_empty() {
+                    match &self.last_search {
+                        Some(search) => search.pattern.source().to_string(),
+                        None => return self.fail("E35: No previous regular expression".into()),
+                    }
+                } else {
+                    pattern
+                };
+                (source, Some(replacement), flags)
+            }
+            ex::Substitute::Repeat { flags, keep } => {
+                let Some(last) = self.last_substitute.clone() else {
+                    return self.fail("E35: No previous regular expression".into());
+                };
+                let flags = if keep {
+                    ex::merge(last.flags, flags)
+                } else {
+                    flags
+                };
+                self.previous_replacement = Some(last.replacement);
+                (last.pattern, None, flags)
+            }
+        };
+        let rule = match flags.ignore_case {
+            Some(ignorecase) => CaseRule {
+                ignorecase,
+                smartcase: false,
+            },
+            None => self.case_rule(true),
+        };
+        // `~` in the pattern is the replacement before this one.
+        let pattern = match Pattern::new(&source, rule, self.previous_replacement.as_deref()) {
+            Ok(pattern) => pattern,
+            Err(message) => return self.fail(message),
+        };
+        let replacement = match replacement {
+            Some(typed) => pattern::with_previous(&typed, self.previous_replacement.as_deref()),
+            None => self.previous_replacement.clone().unwrap_or_default(),
+        };
+        self.previous_replacement = Some(replacement.clone());
+        self.last_substitute = Some(LastSubstitute {
+            pattern: source.clone(),
+            replacement: replacement.clone(),
+            flags,
+        });
+        // The pattern is the last search now: `n` finds it, and it shows.
+        let search_pattern = if flags.ignore_case.is_some() {
+            match self.compile(&source, true) {
+                Some(pattern) => pattern,
+                None => return abort(),
+            }
+        } else {
+            pattern.clone()
+        };
+        let forward = self
+            .last_search
+            .as_ref()
+            .is_none_or(|search| search.forward);
+        self.last_search = Some(Search {
+            pattern: search_pattern,
+            forward,
+            whole: false,
+            smart: true,
+        });
+        self.highlighting = true;
+
+        let current = line_number(text, cur);
+        let (first, last) = range.unwrap_or((current, current));
+        let region_start = nth_line_start(text, first.max(1));
+        let region_end = line_end(text, nth_line_start(text, last.max(1)));
+        let newline = newline(text);
+        let regex = pattern.regex();
+        let mut out = String::new();
+        // `text` is in `out` up to here.
+        let mut copied = region_start;
+        let mut pos = region_start;
+        let (mut count, mut lines_hit) = (0usize, 0usize);
+        // The last line substituted in, and where (in the new text) the last
+        // replacement ends: the cursor goes to that line, as in Vim.
+        let mut last_line: Option<usize> = None;
+        let mut last_end_new = region_start;
+        let mut previous_end = None;
+        while let Some(captures) = regex.captures_at(text, pos) {
+            let found = captures.get(0).expect("the whole match");
+            if found.start() > region_end {
+                break;
+            }
+            let line = line_start(text, found.start());
+            // A match may not start or end inside a CRLF line break (an empty
+            // one between its `\r` and `\n` included).
+            let splits = |at: usize| clip(text, at) != at;
+            let skip = if splits(found.start()) || splits(found.end()) {
+                true
+            } else if found.is_empty() && previous_end == Some(found.start()) {
+                // An empty match right after a match is none, as in Vim.
+                true
+            } else if !flags.global && last_line == Some(line) {
+                // One per line: on to the next.
+                let end = line_end(text, found.start());
+                if end >= text.len() {
+                    break;
+                }
+                pos = after_break(text, end);
+                continue;
+            } else {
+                false
+            };
+            if !skip {
+                count += 1;
+                if last_line != Some(line) {
+                    lines_hit += 1;
+                }
+                if !flags.count_only {
+                    out.push_str(&text[copied..found.start()]);
+                    out.push_str(&pattern::expand(&replacement, &captures, newline));
+                    copied = found.end();
+                    last_end_new = region_start + out.len();
+                }
+                last_line = Some(line);
+                previous_end = Some(found.end());
+            }
+            if found.is_empty() {
+                if found.end() >= text.len() {
+                    break;
+                }
+                pos = next(text, found.end());
+            } else {
+                pos = found.end();
+            }
+        }
+        if count == 0 {
+            if !flags.quiet {
+                self.message = Some(format!("E486: Pattern not found: {source}"));
+            }
+            return abort();
+        }
+        let tally =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        if flags.count_only {
+            self.message = Some(format!(
+                "{} on {}",
+                tally(count, "match", "matches"),
+                tally(lines_hit, "line", "lines")
+            ));
+            return done(Vec::new());
+        }
+        if count > REPORT_LINES {
+            self.message = Some(format!(
+                "{} on {}",
+                tally(count, "substitution", "substitutions"),
+                tally(lines_hit, "line", "lines")
+            ));
+        }
+        let region_end = region_end.max(copied);
+        out.push_str(&text[copied..region_end]);
+        let old = &text[region_start..region_end];
+        let result = spliced(text, region_start..region_end, &out);
+        let to = clamp_normal(
+            &result,
+            first_non_blank(&result, clip(&result, last_end_new)),
+        );
+        if out == old {
+            return done(vec![Op::Cursor(to)]);
+        }
+        // One edit, from the first change to the last: one undo step.
+        let prefix = common_prefix(old, &out);
+        let suffix = common_suffix(&old[prefix..], &out[prefix..]);
+        let insert = &out[prefix..out.len() - suffix];
+        done(vec![
+            edit(region_start + prefix..region_end - suffix, insert),
+            Op::Cursor(to),
+        ])
+    }
     /// `.`: the last change again, at the cursor.
     fn repeat(&mut self, text: &str, cur: usize) -> Step {
         let Some(change) = self.last_change.clone() else {
@@ -1591,7 +1958,9 @@ impl Vim {
         }
     }
 
+    /// Back to Normal mode, the selection's ends kept as `'<` and `'>`.
     fn leave_visual(&mut self) {
+        self.visual_marks = Some((self.anchor.min(self.head), self.anchor.max(self.head)));
         self.mode = Mode::Normal;
         self.shown = 0..0;
     }
@@ -1648,7 +2017,8 @@ fn simulate(text: &mut String, mut cursor: usize, ops: &[Op]) -> usize {
             | Op::Prompt(_)
             | Op::Write
             | Op::Quit { .. }
-            | Op::WriteQuit { .. } => {}
+            | Op::WriteQuit { .. }
+            | Op::Options => {}
         }
     }
     cursor
@@ -2093,44 +2463,83 @@ fn find_in_line(
 }
 
 /// The next match of `search` after `at` (before it, going back), round
-/// the end of the text if need be; `bool`: it wrapped round.
-fn find_match(text: &str, at: usize, search: &Search, forward: bool) -> Option<(usize, bool)> {
-    let pattern = search.pattern.as_str();
-    if pattern.is_empty() {
-        return None;
-    }
-    let whole = |ix: usize| !search.whole || is_whole_word(text, ix, pattern);
+/// the end of the text if need be and 'wrapscan' allows; `bool`: it
+/// wrapped round.
+fn find_match(
+    text: &str,
+    at: usize,
+    search: &Search,
+    forward: bool,
+    wrapscan: bool,
+) -> Option<(usize, bool)> {
+    let regex = search.pattern.regex();
+    // The first match starting at `from` or later and before `before`. Each
+    // start is tried, so one the whole-word rule skips does not hide another
+    // that overlaps it.
+    let first_from = |from: usize, before: usize| -> Option<usize> {
+        let mut pos = from;
+        loop {
+            let found = regex.find_at(text, pos)?;
+            if found.start() >= before {
+                return None;
+            }
+            if search.accepts(text, &found) {
+                return Some(found.start());
+            }
+            if found.start() >= text.len() {
+                return None;
+            }
+            pos = next(text, found.start());
+        }
+    };
     let after = next(text, at);
     if forward {
-        let ahead = text[after..]
-            .match_indices(pattern)
-            .map(|(ix, _)| after + ix)
-            .find(|&ix| whole(ix));
-        if let Some(ix) = ahead {
+        if let Some(ix) = first_from(after, usize::MAX) {
             return Some((ix, false));
         }
-        text[..after.min(text.len())]
-            .match_indices(pattern)
-            .map(|(ix, _)| ix)
-            .find(|&ix| whole(ix))
-            .map(|ix| (ix, true))
-    } else {
-        // A match starting before the cursor counts even when it runs past.
-        let mut matches = text
-            .rmatch_indices(pattern)
-            .map(|(ix, _)| ix)
-            .filter(|&ix| whole(ix));
-        let mut last = None;
-        for ix in matches.by_ref() {
-            if ix < at {
-                return Some((ix, false));
-            }
-            last.get_or_insert(ix);
+        return if wrapscan {
+            first_from(0, after).map(|ix| (ix, true))
+        } else {
+            None
+        };
+    }
+    // A match starting before the cursor counts even when it runs past.
+    let (mut before, mut last) = (None, None);
+    for found in regex.find_iter(text) {
+        if !search.accepts(text, &found) {
+            continue;
         }
-        last.map(|ix| (ix, true))
+        if found.start() < at {
+            before = Some(found.start());
+        } else {
+            last = Some(found.start());
+        }
+    }
+    match before {
+        Some(ix) => Some((ix, false)),
+        None if wrapscan => last.map(|ix| (ix, true)),
+        None => None,
     }
 }
 
+/// A search line split at its first unescaped `delimiter` (`/foo/e`): the
+/// pattern and what follows it (an offset).
+fn split_search(line: &str, delimiter: char) -> (&str, &str) {
+    let mut chars = line.char_indices();
+    while let Some((ix, c)) = chars.next() {
+        if c == '\\' {
+            chars.next();
+        } else if c == delimiter {
+            return (&line[..ix], &line[ix + c.len_utf8()..]);
+        }
+    }
+    (line, "")
+}
+
+/// The line `at` is on, from 1.
+fn line_number(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
 /// Whether the match of `pattern` at `ix` is a whole word, as `*` and `#`
 /// want: no character of the same class on either side.
 fn is_whole_word(text: &str, ix: usize, pattern: &str) -> bool {
@@ -2398,7 +2807,7 @@ mod tests {
             for op in ops {
                 match op {
                     Op::Select(range) => self.selection = range.clone(),
-                    Op::Prompt(_) => self.line = Some(String::new()),
+                    Op::Prompt(_) => self.line = Some(self.vim.prompt_text().to_string()),
                     Op::Edit { .. } | Op::Cursor(_) => {}
                     other => self.actions.push(other.clone()),
                 }
@@ -2965,6 +3374,205 @@ mod tests {
         assert_eq!(run("|abc", ":<Esc>").vim.pending_keys(), "");
     }
 
+    fn run(marked: &str, spec: &str) -> Editor {
+        let mut editor = Editor::new(marked);
+        editor.type_keys(spec);
+        editor
+    }
+
+    #[test]
+    fn searches_take_vims_patterns() {
+        check("|xx abc a.c", "/a.c<CR>", "xx |abc a.c");
+        check("|xx abc a.c", "/a\\.c<CR>", "xx abc |a.c");
+        check("|this is", "/\\<is\\><CR>", "this |is");
+        check("|f(x) (y)", "/(<CR>", "f|(x) (y)");
+        check("|a1 b22", "/\\v\\d{2}<CR>", "a1 b|22");
+        check("|ab\ncd", "/^<CR>", "ab\n|cd");
+        check("|ab\r\ncd", "/b$<CR>", "a|b\r\ncd");
+        check("|a\nb", "/a\\nb<CR>", "|a\nb");
+        check("|xa xa", "/a/<CR>", "x|a xa");
+        let editor = run("|abc", "/\\(<CR>");
+        assert_eq!(editor.vim.message(), Some("E54: Unmatched \\("));
+        assert_eq!(editor.marked(), "|abc");
+        let editor = run("|abc", "/b/e<CR>");
+        assert_eq!(
+            editor.vim.message(),
+            Some("E: search offsets are not supported: /e")
+        );
+        // `^` matches, but an empty match highlights nothing.
+        let editor = run("|ab\ncd", "/^<CR>");
+        assert!(editor.vim.highlight().unwrap().matches("ab\ncd").is_empty());
+    }
+
+    #[test]
+    fn substitute_replaces_over_the_range() {
+        assert_eq!(run("|a a\na a", ":s/a/b/<CR>").marked(), "|b a\na a");
+        assert_eq!(run("|a a\na a", ":s/a/b/g<CR>").marked(), "|b b\na a");
+        assert_eq!(run("|a a\na a", ":%s/a/b/g<CR>").marked(), "b b\n|b b");
+        assert_eq!(run("x\n|  a\nb", ":%s/a/c/<CR>").marked(), "x\n  |c\nb");
+        assert_eq!(
+            run("|one\ntwo\nthree", ":2,3s/^/- /<CR>").marked(),
+            "one\n- two\n|- three"
+        );
+        assert_eq!(
+            run("|a\nb\nc\nd", ":.+1,$-1s/$/!/<CR>").marked(),
+            "a\nb!\n|c!\nd"
+        );
+        // Groups, `&`, case changes, very magic, a delimiter of one's own.
+        assert_eq!(
+            run(
+                "|hello world",
+                ":s/\\(\\w\\+\\) \\(\\w\\+\\)/\\2 \\u\\1/<CR>"
+            )
+            .marked(),
+            "|world Hello"
+        );
+        assert_eq!(run("|ab", ":s/b/[&]/<CR>").marked(), "|a[b]");
+        assert_eq!(run("|a1b22", ":s/\\v\\d+/#/g<CR>").marked(), "|a#b#");
+        assert_eq!(run("|a/b", ":s#/#\\\\#<CR>").marked(), "|a\\b");
+        assert_eq!(run("|中文中", ":s/中/文/g<CR>").marked(), "|文文文");
+        // Line breaks: `\r` splits a line, `\n` in a pattern joins; CRLF
+        // stays CRLF; the cursor goes to the line the last change ends on.
+        assert_eq!(run("|a,b", ":s/,/\\r/<CR>").marked(), "a\n|b");
+        assert_eq!(run("|a,b\r\nc", ":s/,/\\r/<CR>").marked(), "a\r\n|b\r\nc");
+        assert_eq!(run("|a\nb\nc", ":%s/\\n//<CR>").marked(), "|abc");
+        // Empty matches, as Vim takes them.
+        assert_eq!(run("|abc", ":s/x*/-/g<CR>").marked(), "|-a-b-c-");
+        assert_eq!(run("|aa", ":s/a*/-/g<CR>").marked(), "|-");
+        // Never inside a CRLF: an empty match steps over it whole, and a
+        // match that would cut it is none.
+        assert_eq!(run("|a\r\nb", ":%s/x*/-/g<CR>").marked(), "-a-\r\n|-b-");
+        let editor = run("|a\r\nb", ":%s/\\r//<CR>");
+        assert_eq!(editor.marked(), "|a\r\nb");
+        assert_eq!(editor.vim.message(), Some("E486: Pattern not found: \\r"));
+        // Visual mode: `:` starts the line with `'<,'>`.
+        let mut editor = Editor::new("|a\na\na");
+        editor.type_keys("Vj:");
+        assert_eq!(editor.line.as_deref(), Some("'<,'>"));
+        editor.type_keys("s/a/b/<CR>");
+        assert_eq!(editor.marked(), "b\n|b\na");
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(
+            run("|a\na\na", "jVj<Esc>gg:'<,'>s/a/b/<CR>").marked(),
+            "a\nb\n|b"
+        );
+        // One edit for the whole range: one undo step.
+        let mut vim = Vim::default();
+        vim.key(Key::Char(':'), "a\na\na", 0, 0..0);
+        assert_eq!(
+            vim.submit("%s/a/bb/", "a\na\na", 0),
+            Outcome::Handled(vec![edit(0..5, "bb\nbb\nbb"), Op::Cursor(6)])
+        );
+        // Trimmed to what changed.
+        vim.key(Key::Char(':'), "a\nb\nc", 0, 0..0);
+        assert_eq!(
+            vim.submit("%s/c/x/", "a\nb\nc", 0),
+            Outcome::Handled(vec![edit(4..5, "x"), Op::Cursor(4)])
+        );
+    }
+
+    #[test]
+    fn substitute_flags_repeats_and_errors() {
+        let editor = run("|abc", ":s/z/y/<CR>");
+        assert_eq!(editor.vim.message(), Some("E486: Pattern not found: z"));
+        assert_eq!(editor.marked(), "|abc");
+        assert_eq!(run("|abc", ":s/z/y/e<CR>").vim.message(), None);
+        let editor = run("|a a\na", ":%s/a//gn<CR>");
+        assert_eq!(editor.vim.message(), Some("3 matches on 2 lines"));
+        assert_eq!(editor.marked(), "|a a\na");
+        assert_eq!(
+            run("|a a a", ":s/a/b/g<CR>").vim.message(),
+            Some("3 substitutions on 1 line")
+        );
+        assert_eq!(run("|A a", ":s/a/x/gi<CR>").marked(), "|x x");
+        assert_eq!(run("|A a", ":s/a/x/g<CR>").marked(), "|A x");
+        // `:s` again (without its flags), `:&&` (with them), `~`.
+        assert_eq!(
+            run("|a a\na a", ":s/a/b/g<CR>j:s<CR>").marked(),
+            "b b\n|b a"
+        );
+        assert_eq!(
+            run("|a a\na a", ":s/a/b/g<CR>j:&&<CR>").marked(),
+            "b b\n|b b"
+        );
+        assert_eq!(run("|ab", ":s/a/x/<CR>:s/b/~y/<CR>").marked(), "|xxy");
+        // An empty pattern is the last search; `:s` makes its pattern the
+        // last search, which `n` finds and the editor highlights.
+        assert_eq!(run("|a b a", "/a<CR>:s//c/<CR>").marked(), "|c b a");
+        let mut editor = Editor::new("|x a a");
+        editor.type_keys(":s/a/a/<CR>n");
+        assert_eq!(editor.marked(), "x |a a");
+        assert!(editor.vim.highlight().is_some());
+        // Errors: Vim's messages, nothing changed.
+        for (spec, message) in [
+            (":5s/a/b/<CR>", "E16: Invalid range"),
+            (":'<s/a/b/<CR>", "E20: Mark not set"),
+            (":1,2w<CR>", "E481: No range allowed"),
+            (":s<CR>", "E35: No previous regular expression"),
+            (
+                ":s/a/b/c<CR>",
+                "E: :s with c (confirm each) is not supported",
+            ),
+            (":s/\\(/b/<CR>", "E54: Unmatched \\("),
+        ] {
+            let editor = run("|a\nb", spec);
+            assert_eq!(editor.vim.message(), Some(message), "{spec}");
+            assert_eq!(editor.marked(), "|a\nb", "{spec}");
+        }
+        // A range alone goes to its last line.
+        assert_eq!(run("|a\nb\nc", ":2<CR>").marked(), "a\n|b\nc");
+        assert_eq!(run("|a\nb\nc", ":1,$<CR>").marked(), "a\nb\n|c");
+    }
+
+    #[test]
+    fn set_changes_how_vim_works() {
+        // Case: 'ignorecase', 'smartcase' (not for `*`), the last search
+        // matching under the new rule.
+        check("|x foo FOO", ":set ic<CR>/FOO<CR>", "x |foo FOO");
+        check("|x foo Foo", ":set ic scs<CR>/Foo<CR>", "x foo |Foo");
+        check("|Foo foo", ":set ic scs<CR>*", "Foo |foo");
+        // ... and keeps out of it when `:set` recompiles the search.
+        check("|Foo foo FOO", ":set ic<CR>*:set scs<CR>n", "Foo foo |FOO");
+        let mut editor = Editor::new("|x foo FOO");
+        editor.type_keys("/foo<CR>");
+        assert_eq!(
+            editor.vim.highlight().unwrap().matches(&editor.text).len(),
+            1
+        );
+        editor.type_keys(":set ic<CR>");
+        assert_eq!(
+            editor.vim.highlight().unwrap().matches(&editor.text).len(),
+            2
+        );
+        // 'hlsearch': off hides the highlight; on shows it, `:noh` or not.
+        editor.type_keys(":set nohls<CR>");
+        assert_eq!(editor.vim.highlight(), None);
+        editor.type_keys(":noh<CR>:set hls<CR>");
+        assert!(editor.vim.highlight().is_some());
+        // 'wrapscan' off: no going round, and Vim says so.
+        let editor = run("a |x", ":set nows<CR>/a<CR>");
+        assert_eq!(editor.marked(), "a |x");
+        assert_eq!(
+            editor.vim.message(),
+            Some("E385: Search hit BOTTOM without match for: a")
+        );
+        // 'shiftwidth': `>` and Tab; the editors are told.
+        let editor = run("|a", ":set sw=4<CR>>>");
+        assert_eq!(editor.marked(), "    |a");
+        assert_eq!(editor.actions, [Op::Options]);
+        assert_eq!(editor.vim.options().shiftwidth, 4);
+        assert_eq!(run("|a", ":set nu<CR>").actions, [Op::Options]);
+        assert!(run("|a", ":set ic<CR>").actions.is_empty());
+        assert_eq!(
+            run("|a", ":set ic?<CR>").vim.message(),
+            Some("noignorecase")
+        );
+        assert_eq!(
+            run("|a", ":se foo<CR>").vim.message(),
+            Some("E518: Unknown option: foo")
+        );
+    }
+
     #[test]
     fn pending_keys_show_while_typed() {
         let mut vim = Vim::default();
@@ -3143,6 +3751,21 @@ mod tests {
         }
         eprintln!("worst key on 2 MB: {worst:?}");
         assert!(worst < std::time::Duration::from_millis(100), "{worst:?}");
+
+        // `:%s` over all of it, a substitution in every word with an `a`.
+        let mut vim = Vim::default();
+        vim.key(Key::Char(':'), &text, 0, 0..0);
+        let started = std::time::Instant::now();
+        let outcome = vim.submit("%s/a/A/g", &text, 0);
+        let elapsed = started.elapsed();
+        eprintln!("{:?} on 2 MB: {elapsed:?}", vim.message());
+        let Outcome::Handled(ops) = outcome else {
+            panic!("handled")
+        };
+        let mut result = text.clone();
+        simulate(&mut result, 0, &ops);
+        assert_eq!(result, text.replace('a', "A"));
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
@@ -3151,11 +3774,69 @@ mod tests {
             "", "\n", "\n\n", "a", "中", "a\n", "\na", "\r\n", "a\r\nb", "\r\n\r\n", "a\r\n",
         ] {
             for spec in [
-                "x", "dd", "dw", "de", "db", "D", "J", "p", "P", "yyp", "w", "b", "e", "G", "gg",
-                "}", "{", "%", "$", "0", "j", "k", "~", "rX", "vd", "Vd", "viwd", "da(", "ci\"",
-                "o<Esc>", "O<Esc>", "A<Esc>", ".", "3.", "<CR>", "<BS>", " ", "/a<CR>", "?a<CR>",
-                "*", "#", "n", "N", ":2<CR>", "d/a<CR>", "v/a<CR>d", ">>", "<<", "3>>", ">j", ">G",
-                "Vj>", "v3<", ":noh<CR>",
+                "x",
+                "dd",
+                "dw",
+                "de",
+                "db",
+                "D",
+                "J",
+                "p",
+                "P",
+                "yyp",
+                "w",
+                "b",
+                "e",
+                "G",
+                "gg",
+                "}",
+                "{",
+                "%",
+                "$",
+                "0",
+                "j",
+                "k",
+                "~",
+                "rX",
+                "vd",
+                "Vd",
+                "viwd",
+                "da(",
+                "ci\"",
+                "o<Esc>",
+                "O<Esc>",
+                "A<Esc>",
+                ".",
+                "3.",
+                "<CR>",
+                "<BS>",
+                " ",
+                "/a<CR>",
+                "?a<CR>",
+                "*",
+                "#",
+                "n",
+                "N",
+                ":2<CR>",
+                "d/a<CR>",
+                "v/a<CR>d",
+                ">>",
+                "<<",
+                "3>>",
+                ">j",
+                ">G",
+                "Vj>",
+                "v3<",
+                ":noh<CR>",
+                ":s/a/b/g<CR>",
+                ":%s/\\n//<CR>",
+                ":%s/x*/-/g<CR>",
+                ":%s/$/\\r/<CR>",
+                ":%s/^/\\r/g<CR>",
+                "Vj:s/a/b/<CR>",
+                ":set sw=4<CR>>>",
+                "/\\v(a|)+<CR>",
+                ":.,$&&<CR>",
             ] {
                 for start in 0..=text.len() {
                     // The editor's cursor is never inside a character or

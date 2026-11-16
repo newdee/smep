@@ -189,22 +189,23 @@ and `$`; Shift+arrows select as usual, and Page Up / Down scroll.
 | `iw` `aw`, `i"` `a"`, `i(` `a(` (`ib`), `i[`, `i{` (`iB`), `i<` | Objects, after an operator or in Visual mode: `ciw`, `da(` |
 | `p` `P` | Put after / before (whole lines below / above) |
 | `r` + a character, `J`, `~` | Replace, join lines, switch case |
-| `>>` `<<`, `>` `<` + a move or an object | Shift lines right, left by two spaces, as far as Tab indents: `3>>`, `>}`, `<i{` |
+| `>>` `<<`, `>` `<` + a move or an object | Shift lines right, left by `shiftwidth` (two spaces), as far as Tab indents: `3>>`, `>}`, `<i{` |
 | `u`, Ctrl+R | Undo, redo |
 | `.` | Repeat the last change made from Normal mode (with what was typed in Insert mode); Visual-mode changes are not repeated |
-| `v`, `V` | Visual, Visual Line; then a move, `o`, `d` `c` `y` `p` `r` `J` `~` `u` `U`, `>` `<` (`3>`: three shifts) |
-| `/` `?` + text + Enter, `n` `N` | Search forward, backward; the next match, the one before (round the end of the document) |
+| `v`, `V` | Visual, Visual Line; then a move, `o`, `d` `c` `y` `p` `r` `J` `~` `u` `U`, `>` `<` (`3>`: three shifts), `:` (the line starts with `'<,'>`) |
+| `/` `?` + pattern + Enter, `n` `N` | Search forward, backward; the next match, the one before (round the end of the document) |
 | `*` `#` | Search for the word under the cursor, forward, backward |
 | `:w`, `:q`, `:q!`, `:wq`, `:x` | Save; close the tab (`:q` refuses while it has unsaved changes, `:q!` drops them); save and close. On the last tab, closing closes smep |
 | `:12`, `:$` | Go to line 12, to the last line |
+| `:s/pattern/text/`, with a range (`:%s`, `:2,5s`, `:'<,'>s`) and flags (`g` `i` `I` `n` `e`) | Substitute on the cursor's line, or the range's lines; `:s` and `:&&` repeat it (without, with its flags) |
+| `:set` | Options for this run: `ignorecase` (`ic`), `smartcase` (`scs`), `hlsearch` (`hls`), `wrapscan` (`ws`), `shiftwidth` (`sw`), `number` (`nu`), `wrap`; `:set ic?` shows one, `:set` the changed ones |
 | `:noh` | Hide the search's highlight until the next search |
 | Ctrl+D, Ctrl+U | Page down, page up |
 
 `:`, `/` and `?` open a command line along the foot of the pane: type there
 (an input method works), Enter runs it, Escape (or Backspace on an empty
-line) closes it. A search is for the text as typed, case for case, not a
-pattern; `/` + Enter alone searches for the last text again, and a search
-works after an operator (`d/foo`) and in Visual mode. The editor highlights
+line) closes it. `/` + Enter alone searches for the last pattern again, and a
+search works after an operator (`d/foo`) and in Visual mode. The editor highlights
 every match of the last search, whole words only after `*` and `#`, and
 keeps the highlight up to date while you type; `:noh` hides it until the
 next search (`n` included). The rendered view's block editors search but
@@ -216,10 +217,27 @@ find bar.
 counting as one shift; an empty line stays empty. Over more than two
 lines the corner says how many (`3 lines >ed 1 time`).
 
+Patterns are Vim's (magic): `.` `*` `[abc]` `^` `$`, `\(` `\)` `\|` `\+` `\?` `\{n,m}`,
+`\<` `\>`, `\d` `\s` `\w` `\a` `\u` `\l`, `\n` for a line break, `\v` (very magic),
+`\V` (very nomagic), `\c` / `\C` for case. Case counts unless you `:set ic`;
+with `smartcase` an upper-case letter makes it count again. Not there: back
+references in a pattern (`\1`), `\zs` / `\ze`, look-around (`\@`), search
+offsets (`/foo/e`). In a replacement: `&` (or `\0`) the match, `\1` … `\9` its
+groups, `\r` a line break, `\u` `\l` `\U` `\L` … `\E` case, `~` the last
+replacement. `:s` makes one edit (`u` undoes all of it), puts the cursor
+on the last line it changed, and becomes the last search (`n`, the highlight).
+A match never cuts a CRLF line break in two.
+
+`:set` options last until smep quits. `number` and `wrap` show in the editor,
+`shiftwidth` sets the editor's Tab indent as well as `>` and `<` (a block editor's
+Tab types a tab character, as without Vim); with Vim mode off the
+editor looks as it did, and the options come back with it.
+
 Text selected with the mouse (or Ctrl+A) starts Visual mode. Yanks go to
 smep's own register, not the system clipboard (Ctrl+C / Ctrl+V still
-reach that). Not there: other `:` commands (`:w` with a file name, `:s`,
-`:set`, ranges), patterns in searches, marks, macros, named registers.
+reach that). Not there: other `:` commands (`:w` with a file name, `:g`,
+`:d` with a range, `:s` with `c`), marks other than `'<` `'>`, macros, named
+registers.
 
 Note: Normal mode reads keys, not text. With a CJK input method in its
 native mode, the keys reach the input method first and its text lands in

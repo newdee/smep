@@ -7717,6 +7717,7 @@ dependencies = [
  "interprocess",
  "markdown",
  "pdf-inspector",
+ "regex",
  "serde",
  "serde_json",
  "toml 1.1.5+spec-1.1.0",
