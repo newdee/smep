@@ -250,7 +250,8 @@ without a path has no directory.
 key, the text, the cursor and the selection, and answers `Outcome::Pass`
 (the editor or the window handles the key as usual) or
 `Outcome::Handled(ops)`: edits, cursor moves, a selection to show, or an
-action (undo, redo, page up/down, find). It never holds the text, so the
+action (undo, redo, page up/down, the command line, `:w` and `:q`). It
+never holds the text, so the
 same engine drives the source editor and a block editor. Offsets are UTF-8
 bytes on character boundaries; a line ends at `\n` or at the `\r` of `\r\n`
 (`line_end`, `after_break`, `newline`), so CRLF documents stay CRLF.
@@ -280,6 +281,24 @@ A click elsewhere in the window (a blur while the window is active) or a
 tab switch closes the line without running it; another application coming
 to the front leaves it open. Messages (`Vim::message`) go with the next
 keystroke, whoever takes it.
+
+`>` and `<` are operators that always take whole lines (`Vim::shift`):
+the indent is rebuilt in spaces, `vim::SHIFT_WIDTH` (2) a step, the same as
+the editor's Tab (gpui's `TabSize` default; a test types both and compares).
+The shift is one edit, trimmed to the span from the first indent changed to
+the last, so it is one undo step.
+
+Search highlighting ('hlsearch'): `Vim::highlight` is the last search while
+`highlighting` holds (set by every search motion, cleared by `:noh`);
+`Highlight::matches` lists its matches. `Smep::sync_search_marks` shows
+them in the source editor as a gpui `RangeDecorationCollection` (fills, one
+per match), made per tab on first use. It runs after each Vim key, the
+command line closing, a tab shown and Vim mode switched; and on every change
+of a tab's text that has marks, finding the matches again (2 MB with 187,000
+matches: about 0.1 s in a debug build). Only the tab on screen holds marks.
+`set_value` (`Smep::load`) emits no change and clears decorations, so `load`
+marks the tab unhighlighted. Block editors are `TextareaState`, which has no
+range decorations: they get no highlight.
 
 `ActiveEditor::apply_vim` makes the edits with `set_selected_range` +
 `replace` (each one an undo step) and runs the actions through the editor's

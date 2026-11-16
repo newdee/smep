@@ -11,7 +11,9 @@ use std::time::Duration;
 // while the base one takes a full `TextViewStyle`, which the preview themes
 // need. Without a style it renders with the defaults the component theme
 // installs, so the "System" theme looks exactly as before.
-use gpui_kit::base::input::{InputBaseState, MultiLineMode};
+use gpui_kit::base::input::{
+    InputBaseState, MultiLineMode, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle,
+};
 use gpui_kit::base::text::TextView;
 use gpui_kit::base::{ElementExt as _, POPUP_PRIORITY};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -289,10 +291,20 @@ struct DocumentTab {
     folded: HashSet<SectionKey>,
     /// The editor's top line last pushed to the preview.
     scroll_sync: Option<usize>,
+    /// Vim's search highlight in the editor, made when first needed.
+    search_marks: Option<RangeDecorationCollection>,
+    /// The search whose matches `search_marks` shows; `None`: no matches shown.
+    marked: Option<vim::Highlight>,
     _subscriptions: Vec<Subscription>,
 }
 
 type TabId = u64;
+
+/// Vim's search highlight: amber and see-through, as Vim's yellow `Search`,
+/// on light and dark themes alike.
+fn search_mark_color() -> Hsla {
+    hsla(0.13, 0.95, 0.55, 0.35)
+}
 
 impl DocumentTab {
     fn is_dirty(&self) -> bool {
@@ -574,6 +586,8 @@ impl Smep {
             headings: Vec::new(),
             folded: HashSet::new(),
             scroll_sync: None,
+            search_marks: None,
+            marked: None,
             _subscriptions: subscriptions,
         });
         self.schedule_outline(id, window, cx);
@@ -647,10 +661,50 @@ impl Smep {
             self.refresh_title(window);
         }
         self.schedule_preview_refresh(id, window, cx);
+        self.sync_search_marks(Some(id), cx);
         if shown && Self::slash_typed(editor.read(cx)) {
             self.open_insert_menu(window, cx);
         }
         cx.notify();
+    }
+
+    /// Keep the editors' search highlight in step with Vim's: the tab on
+    /// screen shows the last search's matches until `:noh`, and no tab shows
+    /// any with Vim mode off. `changed`: the tab whose text changed, so its
+    /// matches are found again. Only the tab on screen looks for matches;
+    /// the others drop theirs, and look when shown.
+    fn sync_search_marks(&mut self, changed: Option<TabId>, cx: &mut Context<Self>) {
+        let want = self.vim.highlight().filter(|_| self.settings.vim_mode);
+        let active = self.active;
+        for (ix, tab) in self.tabs.iter_mut().enumerate() {
+            let shown = want.clone().filter(|_| ix == active);
+            let stale = changed == Some(tab.id) && tab.marked.is_some();
+            if tab.marked == shown && !stale {
+                continue;
+            }
+            let marks: Vec<RangeDecoration> = match &shown {
+                Some(lit) => lit
+                    .matches(&tab.editor.read(cx).text().to_string())
+                    .into_iter()
+                    .map(|range| {
+                        RangeDecoration::new(range)
+                            .with_style(RangeDecorationStyle::Fill)
+                            .with_color(search_mark_color())
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            match &tab.search_marks {
+                Some(collection) => collection.set(marks, cx),
+                None if !marks.is_empty() => {
+                    tab.search_marks = Some(tab.editor.update(cx, |state, cx| {
+                        state.create_range_decorations_collection(marks, cx)
+                    }));
+                }
+                None => {}
+            }
+            tab.marked = shown;
+        }
     }
 
     #[cfg(test)]
@@ -714,6 +768,7 @@ impl Smep {
                 .update(cx, |rendered, cx| rendered.set_read_only(true, window, cx));
             self.reading_focus.focus(window, cx);
         }
+        self.sync_search_marks(None, cx);
         self.refresh_title(window);
         cx.notify();
     }
@@ -911,6 +966,7 @@ impl Smep {
         self.vim.reset();
         self.vim_editor = None;
         self.save_settings();
+        self.sync_search_marks(None, cx);
         cx.notify();
     }
 
@@ -978,6 +1034,7 @@ impl Smep {
             vim::Outcome::Handled(ops) => {
                 editor.apply_vim(&ops, window, cx);
                 self.run_vim_commands(&editor, &ops, window, cx);
+                self.sync_search_marks(None, cx);
                 cx.notify();
                 true
             }
@@ -1103,6 +1160,7 @@ impl Smep {
         } else {
             self.vim.cancel();
         }
+        self.sync_search_marks(None, cx);
         cx.notify();
     }
 
@@ -1887,7 +1945,9 @@ impl Smep {
             tab.source.clone()
         };
         // `set_value` emits no change event, so `source` is set by hand above
-        // and the rendered view is told that its block is gone.
+        // and the rendered view is told that its block is gone. It drops the
+        // search highlight too: the next sync finds the new text's matches.
+        tab.marked = None;
         let (rendered, editor) = (tab.rendered.clone(), tab.editor.clone());
         rendered.update(cx, |rendered, cx| rendered.deactivate(window, cx));
         editor.update(cx, |state, cx| state.set_value(document.text, window, cx));
@@ -5314,6 +5374,145 @@ mod tests {
         assert!(vim_prompt_input(&smep, cx).is_none());
         assert_eq!(cursor(&editor, cx), "one ".len(), "nothing moved");
         assert_eq!(value(&editor, cx), "one 中文 two 中文 two");
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_shifts_lines_as_the_editors_tab_indents(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "a\nb\nc");
+        let editor = editor(&smep, cx);
+
+        // `>>` indents as far as Tab does in Insert mode.
+        cx.simulate_keystrokes("> > j 0 i tab escape");
+        assert_eq!(value(&editor, cx), "  a\n  b\nc");
+        assert_eq!(
+            crate::vim::SHIFT_WIDTH,
+            2,
+            "the editor's Tab: gpui's TabSize default"
+        );
+
+        // One undo step each; Visual mode takes a count of widths.
+        cx.simulate_keystrokes("u");
+        assert_eq!(value(&editor, cx), "  a\nb\nc");
+        cx.simulate_keystrokes("g g u");
+        assert_eq!(value(&editor, cx), "a\nb\nc");
+        cx.simulate_keystrokes("shift-v j 2 >");
+        assert_eq!(value(&editor, cx), "    a\n    b\nc");
+        assert_eq!(cursor(&editor, cx), 4, "on the first non-blank");
+        cx.simulate_keystrokes("< j");
+        assert_eq!(value(&editor, cx), "  a\n  b\nc");
+        cx.simulate_keystrokes(".");
+        assert_eq!(value(&editor, cx), "a\nb\nc");
+    }
+
+    fn search_marks(
+        smep: &Entity<Smep>,
+        ix: usize,
+        cx: &VisualTestContext,
+    ) -> Vec<std::ops::Range<usize>> {
+        cx.read(|cx| {
+            smep.read(cx).tabs[ix]
+                .search_marks
+                .as_ref()
+                .map_or_else(Vec::new, |marks| marks.get_ranges(cx))
+        })
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_highlights_the_last_search(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "foo bar foo\nfoo");
+        assert!(search_marks(&smep, 0, cx).is_empty());
+        cx.simulate_keystrokes("/ f o o enter");
+        assert_eq!(search_marks(&smep, 0, cx), [0..3, 8..11, 12..15]);
+        draw(cx);
+
+        // Typing keeps them in step: a new match shows, a broken one goes.
+        cx.simulate_keystrokes("shift-g o f o o escape");
+        assert_eq!(search_marks(&smep, 0, cx), [0..3, 8..11, 12..15, 16..19]);
+        cx.simulate_keystrokes("g g x");
+        assert_eq!(search_marks(&smep, 0, cx), [7..10, 11..14, 15..18]);
+
+        // `:noh` hides them; the next search shows them again.
+        cx.simulate_keystrokes(": n o h enter");
+        assert!(search_marks(&smep, 0, cx).is_empty());
+        cx.simulate_keystrokes("n");
+        assert_eq!(search_marks(&smep, 0, cx).len(), 3);
+
+        // `*`: whole words only.
+        cx.simulate_keystrokes("g g o f o o b a r escape *");
+        assert_eq!(
+            search_marks(&smep, 0, cx),
+            vec![11..17],
+            "foobar, not the bar of line 1"
+        );
+
+        // The tab on screen shows them; one left behind drops them, and the
+        // one come back finds them again.
+        cx.simulate_keystrokes("/ b a r enter");
+        let bars = search_marks(&smep, 0, cx);
+        assert_eq!(bars.len(), 2);
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.new_tab(window, cx)));
+        assert!(search_marks(&smep, 0, cx).is_empty());
+        cx.update(|window, cx| smep.update(cx, |this, cx| this.activate(0, window, cx)));
+        assert_eq!(search_marks(&smep, 0, cx), bars);
+
+        // Vim mode off: none; on again: back, as the search is remembered.
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        assert!(search_marks(&smep, 0, cx).is_empty());
+        cx.dispatch_action(crate::keymap::ToggleVim);
+        assert_eq!(search_marks(&smep, 0, cx), bars);
+        draw(cx);
+    }
+
+    #[gpui_kit::test]
+    fn vim_mode_highlights_a_file_opened_into_the_blank_tab(cx: &mut TestAppContext) {
+        let (smep, cx) = open_vim(cx, "");
+        cx.simulate_keystrokes("/ a enter");
+        assert!(search_marks(&smep, 0, cx).is_empty(), "nothing to find yet");
+        // Opening into the blank tab replaces its text without a change event.
+        cx.update(|window, cx| {
+            smep.update(cx, |this, cx| {
+                this.place(
+                    Document {
+                        path: None,
+                        text: "a b a".into(),
+                        format: PreviewFormat::Markdown,
+                        origin: None,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert_eq!(cx.read(|cx| smep.read(cx).tabs.len()), 1, "loaded in place");
+        assert_eq!(search_marks(&smep, 0, cx), [0..1, 4..5]);
+    }
+
+    /// Typing with a search highlighted finds its matches again at each
+    /// change: on 2 MB with five matches in every line, still quick. (The
+    /// text is set, not typed: the test platform lays out a large document
+    /// slowly on every frame, highlight or not.)
+    #[gpui_kit::test]
+    fn vim_mode_highlight_keeps_up_on_a_large_document(cx: &mut TestAppContext) {
+        let line = "Some words on a line, and (a bracket) for good measure.\n";
+        let text = line.repeat(2 * 1024 * 1024 / line.len());
+        let (smep, cx) = open_vim(cx, "a");
+        cx.simulate_keystrokes("/ a enter");
+        let editor = editor(&smep, cx);
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| state.set_value(text.clone(), window, cx))
+        });
+        let matches = text.matches('a').count();
+        let started = std::time::Instant::now();
+        cx.update(|_, cx| {
+            smep.update(cx, |this, cx| {
+                let id = this.tab().id;
+                this.sync_search_marks(Some(id), cx);
+            })
+        });
+        let elapsed = started.elapsed();
+        eprintln!("{matches} matches found again on 2 MB: {elapsed:?}");
+        assert_eq!(search_marks(&smep, 0, cx).len(), matches);
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[gpui_kit::test]

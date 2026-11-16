@@ -193,6 +193,39 @@ struct Search {
     whole: bool,
 }
 
+/// The search whose matches are highlighted ('hlsearch'): the last one,
+/// until `:noh`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Highlight {
+    pattern: String,
+    whole: bool,
+}
+
+impl Highlight {
+    /// Every match in `text`, in order, none overlapping.
+    pub fn matches(&self, text: &str) -> Vec<Range<usize>> {
+        if self.pattern.is_empty() {
+            return Vec::new();
+        }
+        text.match_indices(self.pattern.as_str())
+            .map(|(ix, _)| ix)
+            .filter(|&ix| !self.whole || is_whole_word(text, ix, &self.pattern))
+            .map(|ix| ix..ix + self.pattern.len())
+            .collect()
+    }
+}
+
+/// How many columns `>` and `<` shift a line by: the editor's own Tab
+/// indent (gpui's `TabSize` default, two spaces), so the two agree.
+pub const SHIFT_WIDTH: usize = 2;
+
+/// The most shift widths one `>` or `<` makes (`99999>` in Visual mode
+/// would otherwise build lines of 200,000 spaces).
+const MAX_SHIFTS: usize = 100;
+
+/// A change over more lines than this says so, as Vim's 'report' default.
+const REPORT_LINES: usize = 2;
+
 /// What became of a key.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -207,6 +240,10 @@ enum Operator {
     Delete,
     Change,
     Yank,
+    /// `>`: whole lines, one shift width right.
+    ShiftRight,
+    /// `<`: whole lines, one shift width left.
+    ShiftLeft,
 }
 
 impl Operator {
@@ -215,6 +252,8 @@ impl Operator {
             'd' => Some(Self::Delete),
             'c' => Some(Self::Change),
             'y' => Some(Self::Yank),
+            '>' => Some(Self::ShiftRight),
+            '<' => Some(Self::ShiftLeft),
             _ => None,
         }
     }
@@ -418,6 +457,9 @@ pub struct Vim {
     /// The command line open for the command being typed.
     prompt: Option<Prompt>,
     last_search: Option<Search>,
+    /// Whether the last search's matches are highlighted: from the next
+    /// search (`/`, `?`, `n`, `N`, `*`, `#`) until `:noh`.
+    highlighting: bool,
     /// What Vim says on the status line until the next key: an error, a
     /// search wrapping round.
     message: Option<String>,
@@ -430,6 +472,15 @@ impl Vim {
 
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    /// The search to highlight the matches of, if any.
+    pub fn highlight(&self) -> Option<Highlight> {
+        let search = self.last_search.as_ref().filter(|_| self.highlighting)?;
+        Some(Highlight {
+            pattern: search.pattern.clone(),
+            whole: search.whole,
+        })
     }
 
     /// Say something on the status line until the next key.
@@ -1113,6 +1164,7 @@ impl Vim {
                     self.message = Some("E35: No previous regular expression".into());
                     return None;
                 };
+                self.highlighting = true;
                 let forward = search.forward != reverse;
                 let mut at = cur;
                 let mut wrapped = false;
@@ -1150,6 +1202,16 @@ impl Vim {
     /// Apply an operator to a span.
     fn operate(&mut self, operator: Operator, span: Span, text: &str, cur: usize) -> Step {
         match (operator, span) {
+            // `>` and `<` take whole lines whatever the motion: those it
+            // touches. An exclusive span ending at a line's start leaves
+            // that line out.
+            (Operator::ShiftRight | Operator::ShiftLeft, span) => {
+                let (a, b) = match span {
+                    Span::Lines(a, b) => (a, b),
+                    Span::Chars(range) => (range.start, prev(text, range.end).max(range.start)),
+                };
+                self.shift(operator == Operator::ShiftLeft, a, b, 1, text)
+            }
             (Operator::Yank, Span::Chars(range)) => {
                 self.register = Register {
                     text: text[range.clone()].to_string(),
@@ -1219,6 +1281,65 @@ impl Vim {
                 changed(vec![edit(from..last, ""), Op::Cursor(from)])
             }
         }
+    }
+
+    /// `>` and `<`: shift the lines holding `a` and `b`, and those between,
+    /// `times` shift widths right (or `left`). The indent is rebuilt in
+    /// spaces, a tab counting as one shift width; an empty line stays
+    /// empty. The cursor goes to the first line's first non-blank.
+    fn shift(&mut self, left: bool, a: usize, b: usize, times: usize, text: &str) -> Step {
+        let (first, last) = (line_start(text, a.min(b)), line_end(text, a.max(b)));
+        let by = SHIFT_WIDTH * times.min(MAX_SHIFTS);
+        let mut shifted = String::with_capacity(last - first);
+        let mut lines = 0usize;
+        let mut start = first;
+        loop {
+            let end = line_end(text, start);
+            lines += 1;
+            if start < end {
+                let body = first_non_blank(text, start);
+                let width: usize = text[start..body]
+                    .chars()
+                    .map(|c| if c == '\t' { SHIFT_WIDTH } else { 1 })
+                    .sum();
+                let width = if left {
+                    width.saturating_sub(by)
+                } else {
+                    width + by
+                };
+                shifted.extend(std::iter::repeat_n(' ', width));
+                shifted.push_str(&text[body..end]);
+            }
+            if end >= last {
+                break;
+            }
+            let next_start = after_break(text, end);
+            shifted.push_str(&text[end..next_start]);
+            start = next_start;
+        }
+        if lines > REPORT_LINES {
+            let times = times.min(MAX_SHIFTS);
+            self.message = Some(format!(
+                "{lines} lines {}ed {times} time{}",
+                if left { '<' } else { '>' },
+                if times == 1 { "" } else { "s" }
+            ));
+        }
+        let old = &text[first..last];
+        if shifted == old {
+            return done(vec![Op::Cursor(clamp_normal(
+                text,
+                first_non_blank(text, first),
+            ))]);
+        }
+        // Only the indents change: edit from the first to the last of them.
+        let prefix = common_prefix(old, &shifted);
+        let suffix = common_suffix(&old[prefix..], &shifted[prefix..]);
+        let range = first + prefix..last - suffix;
+        let insert = &shifted[prefix..shifted.len() - suffix];
+        let result = spliced(text, range.clone(), insert);
+        let to = clamp_normal(&result, first_non_blank(&result, first));
+        changed(vec![edit(range, insert), Op::Cursor(to)])
     }
 
     fn paste(&mut self, after: bool, text: &str, cur: usize, count: usize) -> Step {
@@ -1291,7 +1412,12 @@ impl Vim {
     fn ex(&mut self, line: &str, text: &str, cur: usize) -> Step {
         let command = line.trim().trim_start_matches(':').trim();
         match command {
-            "" | "noh" | "nohlsearch" => done(Vec::new()),
+            "" => done(Vec::new()),
+            // `:noh` to `:nohlsearch`, as Vim abbreviates it.
+            _ if command.len() >= 3 && "nohlsearch".starts_with(command) => {
+                self.highlighting = false;
+                done(Vec::new())
+            }
             "w" | "w!" | "write" | "write!" => done(vec![Op::Write]),
             "q" | "quit" | "clo" | "close" => done(vec![Op::Quit { force: false }]),
             "q!" | "quit!" | "clo!" | "close!" => done(vec![Op::Quit { force: true }]),
@@ -1454,6 +1580,12 @@ impl Vim {
             'r' => {
                 self.pending = Some(Pending::Replace);
                 Step::More
+            }
+            // The count is how many shift widths: `3>`.
+            '>' | '<' => {
+                let (a, b, times) = (self.anchor, self.head, self.total_count());
+                self.leave_visual();
+                self.shift(c == '<', a, b, times, text)
             }
             _ => done(Vec::new()),
         }
@@ -1967,20 +2099,7 @@ fn find_match(text: &str, at: usize, search: &Search, forward: bool) -> Option<(
     if pattern.is_empty() {
         return None;
     }
-    // `*` and `#` want whole words: no word character of the same kind on
-    // either side.
-    let whole = |ix: usize| {
-        if !search.whole {
-            return true;
-        }
-        let edge = |c: Option<char>, inner: Option<char>| match (c, inner) {
-            (Some(c), Some(inner)) => class(c, false) != class(inner, false),
-            _ => true,
-        };
-        let end = ix + pattern.len();
-        edge(text[..ix].chars().next_back(), pattern.chars().next())
-            && edge(text[end..].chars().next(), pattern.chars().next_back())
-    };
+    let whole = |ix: usize| !search.whole || is_whole_word(text, ix, pattern);
     let after = next(text, at);
     if forward {
         let ahead = text[after..]
@@ -2010,6 +2129,41 @@ fn find_match(text: &str, at: usize, search: &Search, forward: bool) -> Option<(
         }
         last.map(|ix| (ix, true))
     }
+}
+
+/// Whether the match of `pattern` at `ix` is a whole word, as `*` and `#`
+/// want: no character of the same class on either side.
+fn is_whole_word(text: &str, ix: usize, pattern: &str) -> bool {
+    let edge = |c: Option<char>, inner: Option<char>| match (c, inner) {
+        (Some(c), Some(inner)) => class(c, false) != class(inner, false),
+        _ => true,
+    };
+    let end = ix + pattern.len();
+    edge(text[..ix].chars().next_back(), pattern.chars().next())
+        && edge(text[end..].chars().next(), pattern.chars().next_back())
+}
+
+/// The length of the start `a` and `b` share, on a character boundary.
+fn common_prefix(a: &str, b: &str) -> usize {
+    let mut n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while !a.is_char_boundary(n) || !b.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+/// The length of the end `a` and `b` share, on a character boundary.
+fn common_suffix(a: &str, b: &str) -> usize {
+    let mut n = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !a.is_char_boundary(a.len() - n) || !b.is_char_boundary(b.len() - n) {
+        n -= 1;
+    }
+    n
 }
 
 /// `iw`, `aw`, `i"`, `a(`, …: the range the object covers around `at`.
@@ -2141,11 +2295,27 @@ mod tests {
         let mut keys = Vec::new();
         let mut rest = spec;
         while let Some(c) = rest.chars().next() {
+            // `<` names a key only when a known name follows: `<<` and `<j`
+            // are the characters.
             if c == '<'
                 && let Some(close) = rest.find('>')
                 && close > 1
+                && let name = &rest[1..close]
+                && (matches!(
+                    name,
+                    "Esc"
+                        | "CR"
+                        | "BS"
+                        | "Del"
+                        | "Tab"
+                        | "Left"
+                        | "Right"
+                        | "Up"
+                        | "Down"
+                        | "Home"
+                        | "End"
+                ) || name.len() == 3 && name.starts_with("C-"))
             {
-                let name = &rest[1..close];
                 keys.push(match name {
                     "Esc" => Key::Escape,
                     "CR" => Key::Enter,
@@ -2633,6 +2803,97 @@ mod tests {
     }
 
     #[test]
+    fn shift_moves_whole_lines_a_shift_width() {
+        check("a|b\ncd", ">>", "  |ab\ncd");
+        check("  a|b", "<<", "|ab");
+        check(" a|b", "<<", "|ab");
+        check("|ab", "<<", "|ab");
+        check("|a\nb\nc", "2>>", "  |a\n  b\nc");
+        check("|a\nb\nc", ">j", "  |a\n  b\nc");
+        check("a\nb\n|c", ">k", "a\n  |b\n  c");
+        check("|a\nb\nc", ">G", "  |a\n  b\n  c");
+        check("|a\nb\n\nc", ">}", "  |a\n  b\n\nc");
+        check("x (a\n|b) y", ">i(", "  |x (a\n  b) y");
+        check("|a\nb", ">w", "  |a\nb");
+        // An empty line stays empty; a blank one shifts; a tab counts as
+        // one shift width and the indent comes back in spaces.
+        check("|a\n\nb", ">G", "  |a\n\n  b");
+        check("|    ", "<<", " | ");
+        check("\t|a", ">>", "    |a");
+        check("\t |a", "<<", " |a");
+        // `.` shifts again; so does `3.`, over three lines.
+        check("|a\nb\nc", ">>j.", "  a\n  |b\nc");
+        check("|a\nb\nc", ">>3.", "    |a\n  b\n  c");
+        // Visual mode: the lines selected, the count the shift widths.
+        check("|a\nb", "Vj>", "  |a\n  b");
+        check("|a\nb", "Vj2>", "    |a\n    b");
+        check("  |a", "v<", "|a");
+        check("a|b\ncd", "vj>", "  |ab\n  cd");
+        check("|a\r\nb", ">j", "  |a\r\n  b");
+        check("|中文", ">>", "  |中文");
+        // A huge count shifts no further than MAX_SHIFTS widths.
+        let mut editor = Editor::new("|a");
+        editor.type_keys("V99999>");
+        assert_eq!(editor.text.len(), SHIFT_WIDTH * MAX_SHIFTS + 1);
+        // Over two lines, Vim says so.
+        let mut editor = Editor::new("|a\nb\nc");
+        editor.type_keys("3>>");
+        assert_eq!(editor.vim.message(), Some("3 lines >ed 1 time"));
+        editor.type_keys("Vjj2<");
+        assert_eq!(editor.vim.message(), Some("3 lines <ed 2 times"));
+        assert_eq!(editor.marked(), "|a\nb\nc");
+        // One edit, from the first indent changed to the last.
+        let mut vim = Vim::default();
+        let ops = |vim: &mut Vim, key: char| vim.key(Key::Char(key), "x\n  y\nz", 2, 2..2);
+        ops(&mut vim, '>');
+        assert_eq!(
+            ops(&mut vim, '>'),
+            Outcome::Handled(vec![edit(4..4, "  "), Op::Cursor(6)])
+        );
+    }
+
+    #[test]
+    fn the_last_search_is_highlighted_until_noh() {
+        let mut editor = Editor::new("|foo bar foo");
+        assert_eq!(editor.vim.highlight(), None, "nothing searched yet");
+        editor.type_keys("/foo<CR>");
+        let lit = editor.vim.highlight().expect("highlighted");
+        assert_eq!(lit.matches(&editor.text), [0..3, 8..11]);
+        editor.type_keys("l:noh<CR>");
+        assert_eq!(editor.vim.highlight(), None);
+        editor.type_keys("n");
+        assert_eq!(editor.vim.highlight(), Some(lit), "`n` shows them again");
+        editor.type_keys(":nohlsearch<CR>");
+        assert_eq!(editor.vim.highlight(), None);
+        editor.type_keys("x:no<CR>");
+        assert_eq!(
+            editor.vim.message(),
+            Some("E492: Not an editor command: no"),
+            "`:no` is not `:noh`"
+        );
+        // Edits, mode changes and other moves keep them.
+        editor.type_keys("Nx");
+        assert!(editor.vim.highlight().is_some());
+        editor.vim.reset();
+        assert!(editor.vim.highlight().is_some());
+        // `*` and `#`: whole words only.
+        let mut editor = Editor::new("|foo foobar foo");
+        editor.type_keys("*");
+        let lit = editor.vim.highlight().expect("highlighted");
+        assert_eq!(lit.matches(&editor.text), [0..3, 11..14]);
+        let mut editor = Editor::new("|中文 中文测试 中文");
+        editor.type_keys("/中文<CR>");
+        let lit = editor.vim.highlight().expect("highlighted");
+        assert_eq!(lit.matches(&editor.text), [0..6, 7..13, 20..26]);
+        // A search that finds nothing still highlights its (no) matches.
+        let mut editor = Editor::new("|abc");
+        editor.type_keys("/zzz<CR>");
+        let lit = editor.vim.highlight().expect("highlighted");
+        assert!(lit.matches(&editor.text).is_empty());
+        assert!(lit.matches("").is_empty());
+    }
+
+    #[test]
     fn a_search_wraps_round_and_says_so() {
         let mut editor = Editor::new("foo bar fo|o");
         editor.type_keys("/bar<CR>");
@@ -2805,7 +3066,7 @@ mod tests {
     #[test]
     fn random_keys_keep_the_invariants() {
         const ALPHABET: &str =
-            "hjklwbeWBE0^$GgfFtT;,%{}dcyxXsSDCYpPrJ~uvVoOiaIA.iw\"()1234 /?nN*#:";
+            "hjklwbeWBE0^$GgfFtT;,%{}dcyxXsSDCYpPrJ~uvVoOiaIA.iw\"()1234 /?nN*#:<>";
         let alphabet: Vec<char> = ALPHABET.chars().collect();
         let texts = [
             "one two three\nfour (five) \"six\"\n\nseven",
@@ -2848,10 +3109,12 @@ mod tests {
                 let crlf = editor.text.matches("\r\n").count();
                 assert_eq!(editor.text.matches('\r').count(), crlf, "{text:?} {spec:?}");
                 if text.contains('\r') {
-                    // Typed Enters (the test editor's) are LF; count those out.
+                    // Typed Enters (the test editor's) are LF, and `.` types
+                    // its insert's again; count those out.
                     let typed = editor.text.matches('\n').count() - crlf;
+                    let enters = spec.matches("<CR>").count() * (1 + spec.matches('.').count());
                     assert!(
-                        !editor.text.contains("\r\r") && typed <= spec.matches("<CR>").count(),
+                        !editor.text.contains("\r\r") && typed <= enters,
                         "{text:?} {spec:?}"
                     );
                 }
@@ -2869,7 +3132,7 @@ mod tests {
         let middle = text.len() / 2 - text.len() / 2 % line.len();
         let mut worst = std::time::Duration::ZERO;
         for spec in [
-            "j", "k", "w", "b", "dd", "yyp", "}", "{", "G", "gg", "%", "x", "o",
+            "j", "k", "w", "b", "dd", "yyp", "}", "{", "G", "gg", "%", "x", "o", ">>", "<<", "V9j>",
         ] {
             let mut vim = Vim::default();
             let started = std::time::Instant::now();
@@ -2891,7 +3154,8 @@ mod tests {
                 "x", "dd", "dw", "de", "db", "D", "J", "p", "P", "yyp", "w", "b", "e", "G", "gg",
                 "}", "{", "%", "$", "0", "j", "k", "~", "rX", "vd", "Vd", "viwd", "da(", "ci\"",
                 "o<Esc>", "O<Esc>", "A<Esc>", ".", "3.", "<CR>", "<BS>", " ", "/a<CR>", "?a<CR>",
-                "*", "#", "n", "N", ":2<CR>", "d/a<CR>", "v/a<CR>d",
+                "*", "#", "n", "N", ":2<CR>", "d/a<CR>", "v/a<CR>d", ">>", "<<", "3>>", ">j", ">G",
+                "Vj>", "v3<", ":noh<CR>",
             ] {
                 for start in 0..=text.len() {
                     // The editor's cursor is never inside a character or
